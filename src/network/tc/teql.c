@@ -50,16 +50,15 @@ int config_parse_trivial_link_equalizer_id(
                 void *data,
                 void *userdata) {
 
-        _cleanup_(qdisc_free_or_set_invalidp) QDisc *qdisc = NULL;
+        _cleanup_(qdisc_unref_or_set_invalidp) QDisc *qdisc = NULL;
         TrivialLinkEqualizer *teql;
-        Network *network = data;
+        Network *network = ASSERT_PTR(data);
         unsigned id;
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = qdisc_new_static(QDISC_KIND_TEQL, network, filename, section_line, &qdisc);
         if (r == -ENOMEM)

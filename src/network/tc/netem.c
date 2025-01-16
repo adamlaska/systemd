@@ -60,8 +60,8 @@ int config_parse_network_emulator_delay(
                 void *data,
                 void *userdata) {
 
-        _cleanup_(qdisc_free_or_set_invalidp) QDisc *qdisc = NULL;
-        Network *network = data;
+        _cleanup_(qdisc_unref_or_set_invalidp) QDisc *qdisc = NULL;
+        Network *network = ASSERT_PTR(data);
         NetworkEmulator *ne;
         usec_t u;
         int r;
@@ -69,7 +69,6 @@ int config_parse_network_emulator_delay(
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = qdisc_new_static(QDISC_KIND_NETEM, network, filename, section_line, &qdisc);
         if (r == -ENOMEM)
@@ -122,8 +121,8 @@ int config_parse_network_emulator_rate(
                 void *data,
                 void *userdata) {
 
-        _cleanup_(qdisc_free_or_set_invalidp) QDisc *qdisc = NULL;
-        Network *network = data;
+        _cleanup_(qdisc_unref_or_set_invalidp) QDisc *qdisc = NULL;
+        Network *network = ASSERT_PTR(data);
         NetworkEmulator *ne;
         uint32_t rate;
         int r;
@@ -131,7 +130,6 @@ int config_parse_network_emulator_rate(
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = qdisc_new_static(QDISC_KIND_NETEM, network, filename, section_line, &qdisc);
         if (r == -ENOMEM)
@@ -183,15 +181,14 @@ int config_parse_network_emulator_packet_limit(
                 void *data,
                 void *userdata) {
 
-        _cleanup_(qdisc_free_or_set_invalidp) QDisc *qdisc = NULL;
-        Network *network = data;
+        _cleanup_(qdisc_unref_or_set_invalidp) QDisc *qdisc = NULL;
+        Network *network = ASSERT_PTR(data);
         NetworkEmulator *ne;
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = qdisc_new_static(QDISC_KIND_NETEM, network, filename, section_line, &qdisc);
         if (r == -ENOMEM)

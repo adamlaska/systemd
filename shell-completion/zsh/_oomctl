@@ -5,7 +5,7 @@
 {
     local -a _oomctl_cmds
     _oomctl_cmds=(
-        "dump:Show the current state of the cgroup(s) and system context(s)"
+        "dump:Show the current state of cgroups and system contexts"
         "help:Prints a short help text and exits."
     )
     if (( CURRENT == 1 )); then
@@ -22,7 +22,7 @@
 }
 
 _arguments \
-    {-h,--help}'[Prints a short help text and exits.]' \
-    '--version[Prints a short version string and exits.]' \
+    '(- *)'{-h,--help}'[Prints a short help text and exits.]' \
+    '(- *)--version[Prints a short version string and exits.]' \
     '--no-pager[Do not pipe output into a pager]' \
     '*::oomctl command:_oomctl_commands'

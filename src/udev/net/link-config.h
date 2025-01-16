@@ -6,6 +6,7 @@
 
 #include "condition.h"
 #include "conf-parser.h"
+#include "cpu-set-util.h"
 #include "ethtool-util.h"
 #include "hashmap.h"
 #include "list.h"
@@ -14,6 +15,7 @@
 
 typedef struct LinkConfigContext LinkConfigContext;
 typedef struct LinkConfig LinkConfig;
+typedef struct UdevEvent UdevEvent;
 
 typedef enum MACAddressPolicy {
         MAC_ADDRESS_POLICY_PERSISTENT,
@@ -24,31 +26,39 @@ typedef enum MACAddressPolicy {
 } MACAddressPolicy;
 
 typedef struct Link {
-        int ifindex;
-        const char *ifname;
-        const char *new_name;
-
+        UdevEvent *event;
         LinkConfig *config;
-        sd_device *device;
+
+        /* from sd_device */
+        const char *ifname;
+        int ifindex;
         sd_device_action_t action;
 
+        /* from rtnl */
         char *kind;
-        char *driver;
+        const char *driver;
         uint16_t iftype;
         uint32_t flags;
         struct hw_addr_data hw_addr;
         struct hw_addr_data permanent_hw_addr;
         unsigned name_assign_type;
         unsigned addr_assign_type;
+
+        /* generated name */
+        const char *new_name;
 } Link;
 
 struct LinkConfig {
         char *filename;
+        char **dropins;
 
         NetMatch match;
         LIST_HEAD(Condition, conditions);
 
         char *description;
+        char **properties;
+        char **import_properties;
+        char **unset_properties;
         struct hw_addr_data hw_addr;
         MACAddressPolicy mac_address_policy;
         NamePolicy *name_policy;
@@ -78,6 +88,7 @@ struct LinkConfig {
         int autoneg_flow_control;
         netdev_coalesce_param coalesce;
         uint8_t mdi;
+        CPUSet *rps_cpu_mask;
 
         uint32_t sr_iov_num_vfs;
         OrderedHashmap *sr_iov_by_section;
@@ -93,19 +104,21 @@ int link_load_one(LinkConfigContext *ctx, const char *filename);
 int link_config_load(LinkConfigContext *ctx);
 bool link_config_should_reload(LinkConfigContext *ctx);
 
-int link_new(LinkConfigContext *ctx, sd_netlink **rtnl, sd_device *device, Link **ret);
-Link *link_free(Link *link);
+int link_new(LinkConfigContext *ctx, UdevEvent *event, Link **ret);
+Link* link_free(Link *link);
 DEFINE_TRIVIAL_CLEANUP_FUNC(Link*, link_free);
 
 int link_get_config(LinkConfigContext *ctx, Link *link);
-int link_apply_config(LinkConfigContext *ctx, sd_netlink **rtnl, Link *link);
+int link_apply_config(LinkConfigContext *ctx, Link *link);
 
-const char *mac_address_policy_to_string(MACAddressPolicy p) _const_;
+const char* mac_address_policy_to_string(MACAddressPolicy p) _const_;
 MACAddressPolicy mac_address_policy_from_string(const char *p) _pure_;
 
 /* gperf lookup function */
 const struct ConfigPerfItem* link_config_gperf_lookup(const char *key, GPERF_LEN_TYPE length);
 
+CONFIG_PARSER_PROTOTYPE(config_parse_udev_property);
+CONFIG_PARSER_PROTOTYPE(config_parse_udev_property_name);
 CONFIG_PARSER_PROTOTYPE(config_parse_ifalias);
 CONFIG_PARSER_PROTOTYPE(config_parse_rx_tx_queues);
 CONFIG_PARSER_PROTOTYPE(config_parse_txqueuelen);
@@ -113,3 +126,4 @@ CONFIG_PARSER_PROTOTYPE(config_parse_wol_password);
 CONFIG_PARSER_PROTOTYPE(config_parse_mac_address_policy);
 CONFIG_PARSER_PROTOTYPE(config_parse_name_policy);
 CONFIG_PARSER_PROTOTYPE(config_parse_alternative_names_policy);
+CONFIG_PARSER_PROTOTYPE(config_parse_rps_cpu_mask);

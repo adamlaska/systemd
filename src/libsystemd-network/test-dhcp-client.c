@@ -9,19 +9,22 @@
 #include <stdio.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#if HAVE_VALGRIND_VALGRIND_H
+#  include <valgrind/valgrind.h>
+#endif
 
 #include "sd-dhcp-client.h"
 #include "sd-event.h"
 
 #include "alloc-util.h"
-#include "dhcp-identifier.h"
-#include "dhcp-internal.h"
-#include "dhcp-protocol.h"
+#include "dhcp-duid-internal.h"
+#include "dhcp-network.h"
+#include "dhcp-option.h"
+#include "dhcp-packet.h"
 #include "ether-addr-util.h"
 #include "fd-util.h"
 #include "random-util.h"
 #include "tests.h"
-#include "util.h"
 
 static struct hw_addr_data hw_addr = {
         .length = ETH_ALEN,
@@ -43,7 +46,7 @@ static void test_request_basic(sd_event *e) {
         sd_dhcp_client *client;
 
         if (verbose)
-                printf("* %s\n", __func__);
+                log_info("* %s", __func__);
 
         /* Initialize client without Anonymize settings. */
         r = sd_dhcp_client_new(&client, false);
@@ -54,14 +57,14 @@ static void test_request_basic(sd_event *e) {
         r = sd_dhcp_client_attach_event(client, e, 0);
         assert_se(r >= 0);
 
-        assert_se(sd_dhcp_client_set_request_option(NULL, 0) == -EINVAL);
-        assert_se(sd_dhcp_client_set_request_address(NULL, NULL) == -EINVAL);
-        assert_se(sd_dhcp_client_set_ifindex(NULL, 0) == -EINVAL);
+        ASSERT_RETURN_EXPECTED_SE(sd_dhcp_client_set_request_option(NULL, 0) == -EINVAL);
+        ASSERT_RETURN_EXPECTED_SE(sd_dhcp_client_set_request_address(NULL, NULL) == -EINVAL);
+        ASSERT_RETURN_EXPECTED_SE(sd_dhcp_client_set_ifindex(NULL, 0) == -EINVAL);
 
         assert_se(sd_dhcp_client_set_ifindex(client, 15) == 0);
-        assert_se(sd_dhcp_client_set_ifindex(client, -42) == -EINVAL);
-        assert_se(sd_dhcp_client_set_ifindex(client, -1) == -EINVAL);
-        assert_se(sd_dhcp_client_set_ifindex(client, 0) == -EINVAL);
+        ASSERT_RETURN_EXPECTED_SE(sd_dhcp_client_set_ifindex(client, -42) == -EINVAL);
+        ASSERT_RETURN_EXPECTED_SE(sd_dhcp_client_set_ifindex(client, -1) == -EINVAL);
+        ASSERT_RETURN_EXPECTED_SE(sd_dhcp_client_set_ifindex(client, 0) == -EINVAL);
         assert_se(sd_dhcp_client_set_ifindex(client, 1) == 0);
 
         assert_se(sd_dhcp_client_set_hostname(client, "host") == 1);
@@ -103,7 +106,7 @@ static void test_request_anonymize(sd_event *e) {
         sd_dhcp_client *client;
 
         if (verbose)
-                printf("* %s\n", __func__);
+                log_info("* %s", __func__);
 
         /* Initialize client with Anonymize settings. */
         r = sd_dhcp_client_new(&client, true);
@@ -135,7 +138,7 @@ static void test_checksum(void) {
         };
 
         if (verbose)
-                printf("* %s\n", __func__);
+                log_info("* %s", __func__);
 
         assert_se(dhcp_packet_checksum((uint8_t*)&buf, 20) == be16toh(0x78ae));
 }
@@ -144,10 +147,8 @@ static void test_dhcp_identifier_set_iaid(void) {
         uint32_t iaid_legacy;
         be32_t iaid;
 
-        assert_se(dhcp_identifier_set_iaid(42, &hw_addr, /* legacy = */ true,
-                                           /* use_mac = */ true, &iaid_legacy) >= 0);
-        assert_se(dhcp_identifier_set_iaid(42, &hw_addr, /* legacy = */ false,
-                                           /* use_mac = */ true, &iaid) >= 0);
+        assert_se(dhcp_identifier_set_iaid(NULL, &hw_addr, /* legacy = */ true, &iaid_legacy) >= 0);
+        assert_se(dhcp_identifier_set_iaid(NULL, &hw_addr, /* legacy = */ false, &iaid) >= 0);
 
         /* we expect, that the MAC address was hashed. The legacy value is in native
          * endianness. */
@@ -164,19 +165,18 @@ static int check_options(uint8_t code, uint8_t len, const void *option, void *us
         switch (code) {
         case SD_DHCP_OPTION_CLIENT_IDENTIFIER:
         {
+                sd_dhcp_duid duid;
                 uint32_t iaid;
-                struct duid duid;
-                size_t duid_len;
 
-                assert_se(dhcp_identifier_set_duid_en(/* test_mode = */ true, &duid, &duid_len) >= 0);
-                assert_se(dhcp_identifier_set_iaid(42, &hw_addr, /* legacy = */ true, /* use_mac = */ true, &iaid) >= 0);
+                assert_se(sd_dhcp_duid_set_en(&duid) >= 0);
+                assert_se(dhcp_identifier_set_iaid(NULL, &hw_addr, /* legacy = */ true, &iaid) >= 0);
 
-                assert_se(len == sizeof(uint8_t) + sizeof(uint32_t) + duid_len);
+                assert_se(len == sizeof(uint8_t) + sizeof(uint32_t) + duid.size);
                 assert_se(len == 19);
                 assert_se(((uint8_t*) option)[0] == 0xff);
 
                 assert_se(memcmp((uint8_t*) option + 1, &iaid, sizeof(iaid)) == 0);
-                assert_se(memcmp((uint8_t*) option + 5, &duid, duid_len) == 0);
+                assert_se(memcmp((uint8_t*) option + 5, &duid.duid, duid.size) == 0);
                 break;
         }
 
@@ -189,7 +189,7 @@ static int check_options(uint8_t code, uint8_t len, const void *option, void *us
 
 int dhcp_network_send_raw_socket(int s, const union sockaddr_union *link, const void *packet, size_t len) {
         size_t size;
-        _cleanup_free_ DHCPPacket *discover;
+        _cleanup_free_ DHCPPacket *discover = NULL;
         uint16_t ip_check, udp_check;
 
         assert_se(s >= 0);
@@ -238,7 +238,10 @@ int dhcp_network_bind_raw_socket(
                 uint32_t id,
                 const struct hw_addr_data *_hw_addr,
                 const struct hw_addr_data *_bcast_addr,
-                uint16_t arp_type, uint16_t port) {
+                uint16_t arp_type,
+                uint16_t port,
+                bool so_priority_set,
+                int so_priority) {
 
         if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0, test_fd) < 0)
                 return -errno;
@@ -267,7 +270,7 @@ static int test_discover_message_verify(size_t size, struct DHCPMessage *dhcp) {
         assert_se(res == DHCP_DISCOVER);
 
         if (verbose)
-                printf("  recv DHCP Discover 0x%08x\n", be32toh(dhcp->xid));
+                log_info("  recv DHCP Discover 0x%08x", be32toh(dhcp->xid));
 
         return 0;
 }
@@ -277,7 +280,7 @@ static void test_discover_message(sd_event *e) {
         int res, r;
 
         if (verbose)
-                printf("* %s\n", __func__);
+                log_info("* %s", __func__);
 
         r = sd_dhcp_client_new(&client, false);
         assert_se(r >= 0);
@@ -288,7 +291,6 @@ static void test_discover_message(sd_event *e) {
 
         assert_se(sd_dhcp_client_set_ifindex(client, 42) >= 0);
         assert_se(sd_dhcp_client_set_mac(client, hw_addr.bytes, bcast_addr.bytes, hw_addr.length, ARPHRD_ETHER) >= 0);
-        dhcp_client_set_test_mode(client, true);
 
         assert_se(sd_dhcp_client_set_request_option(client, 248) >= 0);
 
@@ -422,7 +424,7 @@ static int test_addr_acq_acquired(sd_dhcp_client *client, int event,
                          sizeof(addrs[0].s_addr)) == 0);
 
         if (verbose)
-                printf("  DHCP address acquired\n");
+                log_info("  DHCP address acquired");
 
         sd_event_exit(e, 0);
 
@@ -441,7 +443,7 @@ static int test_addr_acq_recv_request(size_t size, DHCPMessage *request) {
         assert_se(msg_bytes[size - 1] == SD_DHCP_OPTION_END);
 
         if (verbose)
-                printf("  recv DHCP Request  0x%08x\n", be32toh(xid));
+                log_info("  recv DHCP Request  0x%08x", be32toh(xid));
 
         memcpy(&test_addr_acq_ack[26], &udp_check, sizeof(udp_check));
         memcpy(&test_addr_acq_ack[32], &xid, sizeof(xid));
@@ -454,7 +456,7 @@ static int test_addr_acq_recv_request(size_t size, DHCPMessage *request) {
         assert_se(res == sizeof(test_addr_acq_ack));
 
         if (verbose)
-                printf("  send DHCP Ack\n");
+                log_info("  send DHCP Ack");
 
         return 0;
 };
@@ -472,7 +474,7 @@ static int test_addr_acq_recv_discover(size_t size, DHCPMessage *discover) {
         xid = discover->xid;
 
         if (verbose)
-                printf("  recv DHCP Discover 0x%08x\n", be32toh(xid));
+                log_info("  recv DHCP Discover 0x%08x", be32toh(xid));
 
         memcpy(&test_addr_acq_offer[26], &udp_check, sizeof(udp_check));
         memcpy(&test_addr_acq_offer[32], &xid, sizeof(xid));
@@ -485,7 +487,7 @@ static int test_addr_acq_recv_discover(size_t size, DHCPMessage *discover) {
         assert_se(res == sizeof(test_addr_acq_offer));
 
         if (verbose)
-                printf("  sent DHCP Offer\n");
+                log_info("  sent DHCP Offer");
 
         return 0;
 }
@@ -495,7 +497,7 @@ static void test_addr_acq(sd_event *e) {
         int res, r;
 
         if (verbose)
-                printf("* %s\n", __func__);
+                log_info("* %s", __func__);
 
         r = sd_dhcp_client_new(&client, false);
         assert_se(r >= 0);
@@ -506,14 +508,13 @@ static void test_addr_acq(sd_event *e) {
 
         assert_se(sd_dhcp_client_set_ifindex(client, 42) >= 0);
         assert_se(sd_dhcp_client_set_mac(client, hw_addr.bytes, bcast_addr.bytes, hw_addr.length, ARPHRD_ETHER) >= 0);
-        dhcp_client_set_test_mode(client, true);
 
         assert_se(sd_dhcp_client_set_callback(client, test_addr_acq_acquired, e) >= 0);
 
         callback_recv = test_addr_acq_recv_discover;
 
         assert_se(sd_event_add_time_relative(e, NULL, CLOCK_BOOTTIME,
-                                             2 * USEC_PER_SEC, 0,
+                                             30 * USEC_PER_SEC, 0,
                                              NULL, INT_TO_PTR(-ETIMEDOUT)) >= 0);
 
         res = sd_dhcp_client_start(client);
@@ -534,6 +535,8 @@ static void test_addr_acq(sd_event *e) {
 int main(int argc, char *argv[]) {
         _cleanup_(sd_event_unrefp) sd_event *e;
 
+        assert_se(setenv("SYSTEMD_NETWORK_TEST_MODE", "1", 1) >= 0);
+
         test_setup_logging(LOG_DEBUG);
 
         assert_se(sd_event_new(&e) >= 0);
@@ -546,11 +549,12 @@ int main(int argc, char *argv[]) {
         test_discover_message(e);
         test_addr_acq(e);
 
-#if VALGRIND
+#if HAVE_VALGRIND_VALGRIND_H
         /* Make sure the async_close thread has finished.
          * valgrind would report some of the phread_* structures
          * as not cleaned up properly. */
-        sleep(1);
+        if (RUNNING_ON_VALGRIND)
+                sleep(1);
 #endif
 
         return 0;

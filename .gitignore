@@ -7,6 +7,7 @@
 .config.args
 .gdb_history
 .deps/
+.venv/
 .mypy_cache/
 __pycache__/
 /*.gcda
@@ -31,9 +32,11 @@ __pycache__/
 /.mkosi-*
 /mkosi.builddir/
 /mkosi.output/
-/mkosi.default
 /mkosi.installdir/
-# Ignore any mkosi config files with "local" in the name
-/mkosi.default.d/**/*local*.conf
+/mkosi.key
+/mkosi.crt
+mkosi.local.conf
 /tags
 .dir-locals-2.el
+.vscode/
+/pkg/

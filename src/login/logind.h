@@ -7,7 +7,9 @@
 #include "sd-bus.h"
 #include "sd-device.h"
 #include "sd-event.h"
+#include "sd-varlink.h"
 
+#include "calendarspec.h"
 #include "conf-parser.h"
 #include "hashmap.h"
 #include "list.h"
@@ -59,8 +61,8 @@ struct Manager {
         char **kill_only_users, **kill_exclude_users;
         bool kill_user_processes;
 
-        unsigned long session_counter;
-        unsigned long inhibit_counter;
+        uint64_t session_counter;
+        uint64_t inhibit_counter;
 
         Hashmap *session_units;
         Hashmap *user_units;
@@ -76,7 +78,7 @@ struct Manager {
         char *action_job;
         sd_event_source *inhibit_timeout_source;
 
-        const HandleActionData *scheduled_shutdown_action;
+        HandleAction scheduled_shutdown_action;
         usec_t scheduled_shutdown_timeout;
         sd_event_source *scheduled_shutdown_timeout_source;
         uid_t scheduled_shutdown_uid;
@@ -96,6 +98,10 @@ struct Manager {
         HandleAction idle_action;
         bool was_idle;
 
+        usec_t stop_idle_session_usec;
+
+        HandleActionSleepMask handle_action_sleep_mask;
+
         HandleAction handle_power_key;
         HandleAction handle_power_key_long_press;
         HandleAction handle_reboot_key;
@@ -104,6 +110,7 @@ struct Manager {
         HandleAction handle_suspend_key_long_press;
         HandleAction handle_hibernate_key;
         HandleAction handle_hibernate_key_long_press;
+        HandleAction handle_secure_attention_key;
 
         HandleAction handle_lid_switch;
         HandleAction handle_lid_switch_ep;
@@ -137,6 +144,12 @@ struct Manager {
 
         char *efi_loader_entry_one_shot;
         struct stat efi_loader_entry_one_shot_stat;
+
+        CalendarSpec *maintenance_time;
+
+        dual_timestamp init_ts;
+
+        sd_varlink_server *varlink_server;
 };
 
 void manager_reset_config(Manager *m);
@@ -161,7 +174,7 @@ bool manager_shall_kill(Manager *m, const char *user);
 int manager_get_idle_hint(Manager *m, dual_timestamp *t);
 
 int manager_get_user_by_pid(Manager *m, pid_t pid, User **user);
-int manager_get_session_by_pid(Manager *m, pid_t pid, Session **session);
+int manager_get_session_by_pidref(Manager *m, const PidRef *pid, Session **ret);
 
 bool manager_is_lid_closed(Manager *m);
 bool manager_is_docked_or_external_displays(Manager *m);

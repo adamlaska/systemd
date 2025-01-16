@@ -13,6 +13,7 @@
 #include "fd-util.h"
 #include "fileio.h"
 #include "format-util.h"
+#include "fs-util.h"
 #include "logind-seat-dbus.h"
 #include "logind-seat.h"
 #include "logind-session-dbus.h"
@@ -23,15 +24,14 @@
 #include "string-util.h"
 #include "terminal-util.h"
 #include "tmpfile-util.h"
-#include "util.h"
 
-int seat_new(Seat** ret, Manager *m, const char *id) {
+int seat_new(Manager *m, const char *id, Seat **ret) {
         _cleanup_(seat_freep) Seat *s = NULL;
         int r;
 
-        assert(ret);
         assert(m);
         assert(id);
+        assert(ret);
 
         if (!seat_name_is_valid(id))
                 return -EINVAL;
@@ -42,13 +42,11 @@ int seat_new(Seat** ret, Manager *m, const char *id) {
 
         *s = (Seat) {
                 .manager = m,
+                .id = strdup(id),
+                .state_file = path_join("/run/systemd/seats/", id),
         };
-
-        s->state_file = path_join("/run/systemd/seats", id);
-        if (!s->state_file)
+        if (!s->id || !s->state_file)
                 return -ENOMEM;
-
-        s->id = basename(s->state_file);
 
         r = hashmap_put(m->seats, s->id, s);
         if (r < 0)
@@ -77,12 +75,13 @@ Seat* seat_free(Seat *s) {
 
         free(s->positions);
         free(s->state_file);
+        free(s->id);
 
         return mfree(s);
 }
 
 int seat_save(Seat *s) {
-        _cleanup_free_ char *temp_path = NULL;
+        _cleanup_(unlink_and_freep) char *temp_path = NULL;
         _cleanup_fclose_ FILE *f = NULL;
         int r;
 
@@ -147,14 +146,11 @@ int seat_save(Seat *s) {
                 goto fail;
         }
 
+        temp_path = mfree(temp_path);
         return 0;
 
 fail:
         (void) unlink(s->state_file);
-
-        if (temp_path)
-                (void) unlink(temp_path);
-
         return log_error_errno(r, "Failed to save seat data %s: %m", s->state_file);
 }
 
@@ -168,7 +164,7 @@ int seat_load(Seat *s) {
 
 static int vt_allocate(unsigned vtnr) {
         char p[sizeof("/dev/tty") + DECIMAL_STR_MAX(unsigned)];
-        _cleanup_close_ int fd = -1;
+        _cleanup_close_ int fd = -EBADF;
 
         assert(vtnr >= 1);
 
@@ -228,8 +224,20 @@ int seat_set_active(Seat *s, Session *session) {
         assert(s);
         assert(!session || session->seat == s);
 
-        if (session == s->active)
+        /* When logind receives the SIGRTMIN signal from the kernel, it will
+         * execute session_leave_vt and stop all devices of the session; at
+         * this time, if the session is active and there is no change in the
+         * session, then the session does not have the permissions of the device,
+         * and the machine will have a black screen and suspended animation.
+         * Therefore, if the active session has executed session_leave_vt ,
+         * A resume is required here. */
+        if (session == s->active) {
+                if (session) {
+                        log_debug("Active session remains unchanged, resuming session devices.");
+                        session_device_resume_all(session);
+                }
                 return 0;
+        }
 
         old_active = s->active;
         s->active = session;
@@ -389,11 +397,11 @@ int seat_read_active_vt(Seat *s) {
         if (lseek(s->manager->console_active_fd, SEEK_SET, 0) < 0)
                 return log_error_errno(errno, "lseek on console_active_fd failed: %m");
 
+        errno = 0;
         k = read(s->manager->console_active_fd, t, sizeof(t)-1);
-        if (k <= 0) {
-                log_error("Failed to read current console: %s", k < 0 ? strerror_safe(errno) : "EOF");
-                return k < 0 ? -errno : -EIO;
-        }
+        if (k <= 0)
+                return log_error_errno(errno ?: EIO,
+                                       "Failed to read current console: %s", STRERROR_OR_EOF(errno));
 
         t[k] = 0;
         truncate_nl(t);

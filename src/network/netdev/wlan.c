@@ -12,38 +12,23 @@
 #include "wlan.h"
 
 static void wlan_done(NetDev *netdev) {
-        WLan *w;
-
-        assert(netdev);
-
-        w = WLAN(netdev);
-
-        assert(w);
+        WLan *w = WLAN(netdev);
 
         w->wiphy_name = mfree(w->wiphy_name);
 }
 
 static void wlan_init(NetDev *netdev) {
-        WLan *w;
-
-        assert(netdev);
-
-        w = WLAN(netdev);
-
-        assert(w);
+        WLan *w = WLAN(netdev);
 
         w->wiphy_index = UINT32_MAX;
         w->wds = -1;
 }
 
 static int wlan_get_wiphy(NetDev *netdev, Wiphy **ret) {
-        WLan *w;
+        WLan *w = WLAN(netdev);
 
-        assert(netdev);
-
-        w = WLAN(netdev);
-
-        assert(w);
+        if (!netdev_is_managed(netdev))
+                return -ENOENT; /* Already detached, due to e.g. reloading .netdev files. */
 
         if (w->wiphy_name)
                 return wiphy_get_by_name(netdev->manager, w->wiphy_name, ret);
@@ -56,16 +41,9 @@ static int wlan_is_ready_to_create(NetDev *netdev, Link *link) {
 }
 
 static int wlan_fill_message(NetDev *netdev, sd_netlink_message *m) {
+        WLan *w = WLAN(netdev);
         Wiphy *wiphy;
-        WLan *w;
         int r;
-
-        assert(netdev);
-        assert(m);
-
-        w = WLAN(netdev);
-
-        assert(w);
 
         r = wlan_get_wiphy(netdev, &wiphy);
         if (r < 0)
@@ -145,14 +123,9 @@ static int wlan_create(NetDev *netdev) {
 }
 
 static int wlan_verify(NetDev *netdev, const char *filename) {
-        WLan *w;
+        WLan *w = WLAN(netdev);
 
-        assert(netdev);
         assert(filename);
-
-        w = WLAN(netdev);
-
-        assert(w);
 
         if (w->iftype == NL80211_IFTYPE_UNSPECIFIED)
                 return log_netdev_warning_errno(netdev, SYNTHETIC_ERRNO(EINVAL),
@@ -179,13 +152,12 @@ int config_parse_wiphy(
                 void *data,
                 void *userdata) {
 
-        WLan *w = userdata;
+        WLan *w = WLAN(userdata);
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(userdata);
 
         if (isempty(rvalue)) {
                 w->wiphy_name = mfree(w->wiphy_name);
@@ -219,12 +191,11 @@ int config_parse_wlan_iftype(
                 void *data,
                 void *userdata) {
 
-        enum nl80211_iftype t, *iftype = data;
+        enum nl80211_iftype t, *iftype = ASSERT_PTR(data);
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         if (isempty(rvalue)) {
                 *iftype = NL80211_IFTYPE_UNSPECIFIED;

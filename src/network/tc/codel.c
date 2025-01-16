@@ -86,15 +86,14 @@ int config_parse_controlled_delay_u32(
                 void *data,
                 void *userdata) {
 
-        _cleanup_(qdisc_free_or_set_invalidp) QDisc *qdisc = NULL;
+        _cleanup_(qdisc_unref_or_set_invalidp) QDisc *qdisc = NULL;
         ControlledDelay *cd;
-        Network *network = data;
+        Network *network = ASSERT_PTR(data);
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = qdisc_new_static(QDISC_KIND_CODEL, network, filename, section_line, &qdisc);
         if (r == -ENOMEM)
@@ -139,16 +138,15 @@ int config_parse_controlled_delay_usec(
                 void *data,
                 void *userdata) {
 
-        _cleanup_(qdisc_free_or_set_invalidp) QDisc *qdisc = NULL;
+        _cleanup_(qdisc_unref_or_set_invalidp) QDisc *qdisc = NULL;
         ControlledDelay *cd;
-        Network *network = data;
+        Network *network = ASSERT_PTR(data);
         usec_t *p;
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = qdisc_new_static(QDISC_KIND_CODEL, network, filename, section_line, &qdisc);
         if (r == -ENOMEM)
@@ -205,15 +203,14 @@ int config_parse_controlled_delay_bool(
                 void *data,
                 void *userdata) {
 
-        _cleanup_(qdisc_free_or_set_invalidp) QDisc *qdisc = NULL;
+        _cleanup_(qdisc_unref_or_set_invalidp) QDisc *qdisc = NULL;
         ControlledDelay *cd;
-        Network *network = data;
+        Network *network = ASSERT_PTR(data);
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = qdisc_new_static(QDISC_KIND_CODEL, network, filename, section_line, &qdisc);
         if (r == -ENOMEM)
@@ -226,14 +223,7 @@ int config_parse_controlled_delay_bool(
 
         cd = CODEL(qdisc);
 
-        if (isempty(rvalue)) {
-                cd->ecn = -1;
-
-                qdisc = NULL;
-                return 0;
-        }
-
-        r = parse_boolean(rvalue);
+        r = parse_tristate(rvalue, &cd->ecn);
         if (r < 0) {
                 log_syntax(unit, LOG_WARNING, filename, line, r,
                            "Failed to parse '%s=', ignoring assignment: %s",
@@ -241,8 +231,7 @@ int config_parse_controlled_delay_bool(
                 return 0;
         }
 
-        cd->ecn = r;
-        qdisc = NULL;
+        TAKE_PTR(qdisc);
 
         return 0;
 }

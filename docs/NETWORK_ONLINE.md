@@ -16,7 +16,7 @@ start to be configured. Its primary purpose is for usage with firewall services
 that want to establish a firewall *before* any network interface is up.
 
 `network-pre.target` is a passive unit: it cannot be started directly and it is
-not pulled in by the the network management service, but instead a service that
+not pulled in by the network management service, but instead a service that
 wants to run before it must pull it in. Network management services hence
 should set `After=network-pre.target`, but not `Wants=network-pre.target` or
 `Requires=network-pre.target`. Services that want to be run before the network
@@ -28,7 +28,7 @@ avoiding an unnecessary synchronization point.
 ## Network management services: `network.target`
 
 `network.target` indicates that the network management stack has been started.
-Ordering after it it has little meaning during start-up: whether any network
+Ordering after it has little meaning during start-up: whether any network
 interfaces are already configured when it is reached is not defined.
 
 Its primary purpose is for ordering things properly at shutdown: since the
@@ -45,7 +45,7 @@ themselves. Services using the network should hence simply place an
 `After=network.target` stanza in their unit files, without
 `Wants=network.target` or `Requires=network.target`.
 
-## Network connectivity has been estabilished: `network-online.target`
+## Network connectivity has been established: `network-online.target`
 
 `network-online.target` is a target that actively waits until the network is
 "up", where the definition of "up" is defined by the network management
@@ -152,7 +152,7 @@ For details, see the next question.
 
 ## What does "up" actually mean?
 
-The services that are ordered before `network-online.target` define it's
+The services that are ordered before `network-online.target` define its
 meaning. *Usually* means that all configured network devices are up and have an
 IP address assigned, but details may vary. In particular, configuration may
 affect which interfaces are taken into account.
@@ -240,7 +240,7 @@ are fully configured or failed and at least one link is online; see
 for details. Those conditions are affected by the presence of configuration
 that matches various links, but also by settings like
 `Unmanaged=`, `RequiredForOnline=`, `RequiredFamilyForOnline=`; see
-[systemd.network(5)](https://www.freedesktop.org/software/systemd/man/systemd.socket.html).
+[systemd.network(5)](https://www.freedesktop.org/software/systemd/man/systemd.network.html).
 
 It is also possible to plug in additional checks for network state. For
 example, to delay `network-online.target` until some a specific host is
@@ -254,7 +254,9 @@ After=nss-lookup.target
 Before=network-online.target
 
 [Service]
-ExecStart=sh -c 'while ! ping -c 1 example.com; do sleep 1; done'
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=sh -c 'until ping -c 1 example.com; do sleep 1; done'
 
 [Install]
 WantedBy=network-online.target

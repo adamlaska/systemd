@@ -29,6 +29,7 @@ int parse_devnum(const char *s, dev_t *ret);
         })
 
 int device_path_make_major_minor(mode_t mode, dev_t devnum, char **ret);
+int device_path_make_inaccessible(mode_t mode, char **ret);
 int device_path_make_canonical(mode_t mode, dev_t devnum, char **ret);
 int device_path_parse_major_minor(const char *path, mode_t *ret_mode, dev_t *ret_devnum);
 
@@ -49,3 +50,7 @@ static inline char *format_devnum(dev_t d, char buf[static DEVNUM_STR_MAX]) {
 }
 
 #define FORMAT_DEVNUM(d) format_devnum((d), (char[DEVNUM_STR_MAX]) {})
+
+static inline bool devnum_is_zero(dev_t d) {
+        return major(d) == 0 && minor(d) == 0;
+}

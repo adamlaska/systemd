@@ -5,7 +5,6 @@
 #include "strv.h"
 #include "tests.h"
 #include "utf8.h"
-#include "util.h"
 
 TEST(utf8_is_printable) {
         assert_se(utf8_is_printable("ascii is valid\tunicode", 22));
@@ -63,7 +62,7 @@ static void test_utf8_to_ascii_one(const char *s, int r_expected, const char *ex
         r = utf8_to_ascii(s, '*', &ans);
         log_debug("\"%s\" → %d/\"%s\" (expected %d/\"%s\")", s, r, strnull(ans), r_expected, strnull(expected));
         assert_se(r == r_expected);
-        assert_se(streq_ptr(ans, expected));
+        ASSERT_STREQ(ans, expected);
 }
 
 TEST(utf8_to_ascii) {
@@ -100,7 +99,7 @@ TEST(utf8_encoded_valid_unichar) {
 }
 
 TEST(utf8_escape_invalid) {
-        _cleanup_free_ char *p1, *p2, *p3;
+        _cleanup_free_ char *p1 = NULL, *p2 = NULL, *p3 = NULL;
 
         p1 = utf8_escape_invalid("goo goo goo");
         log_debug("\"%s\"", p1);
@@ -116,7 +115,7 @@ TEST(utf8_escape_invalid) {
 }
 
 TEST(utf8_escape_non_printable) {
-        _cleanup_free_ char *p1, *p2, *p3, *p4, *p5, *p6;
+        _cleanup_free_ char *p1 = NULL, *p2 = NULL, *p3 = NULL, *p4 = NULL, *p5 = NULL, *p6 = NULL;
 
         p1 = utf8_escape_non_printable("goo goo goo");
         log_debug("\"%s\"", p1);
@@ -149,7 +148,7 @@ TEST(utf8_escape_non_printable_full) {
                        "\001 \019\20\a",    /* control characters */
                        "\xef\xbf\x30\x13")  /* misplaced continuation bytes followed by a digit and cc */
                 for (size_t cw = 0; cw < 22; cw++) {
-                        _cleanup_free_ char *p, *q;
+                        _cleanup_free_ char *p = NULL, *q = NULL;
                         size_t ew;
 
                         p = utf8_escape_non_printable_full(s, cw, false);
@@ -184,7 +183,7 @@ TEST(utf16_to_utf8) {
         assert_se(b);
 
         free(a);
-        a = utf16_to_utf8(b, char16_strlen(b) * 2);
+        a = utf16_to_utf8(b, SIZE_MAX);
         assert_se(a);
         assert_se(strlen(a) == sizeof(utf8));
         assert_se(memcmp(a, utf8, sizeof(utf8)) == 0);
@@ -219,12 +218,12 @@ TEST(utf8_to_utf16) {
                 _cleanup_free_ char16_t *a = NULL;
                 _cleanup_free_ char *b = NULL;
 
-                a = utf8_to_utf16(p, strlen(p));
+                a = utf8_to_utf16(p, SIZE_MAX);
                 assert_se(a);
 
-                b = utf16_to_utf8(a, char16_strlen(a) * 2);
+                b = utf16_to_utf8(a, SIZE_MAX);
                 assert_se(b);
-                assert_se(streq(p, b));
+                ASSERT_STREQ(p, b);
         }
 }
 

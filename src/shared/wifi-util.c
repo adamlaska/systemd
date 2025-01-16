@@ -55,15 +55,15 @@ int wifi_get_interface(sd_netlink *genl, int ifindex, enum nl80211_iftype *ret_i
         if (r < 0)
                 return log_debug_errno(r, "Failed to get NL80211_ATTR_IFTYPE attribute: %m");
 
-        r = sd_netlink_message_read_data_suffix0(reply, NL80211_ATTR_SSID, &len, (void**) &ssid);
+        r = sd_netlink_message_read_data(reply, NL80211_ATTR_SSID, &len, (void**) &ssid);
         if (r < 0 && r != -ENODATA)
                 return log_debug_errno(r, "Failed to get NL80211_ATTR_SSID attribute: %m");
         if (r >= 0) {
                 if (len == 0) {
-                        log_debug("SSID has zero length, ignoring the received SSID.");
+                        log_debug("SSID has zero length, ignoring it.");
                         ssid = mfree(ssid);
                 } else if (strlen_ptr(ssid) != len) {
-                        log_debug("SSID contains NUL character(s), ignoring the received SSID.");
+                        log_debug("SSID contains NUL characters, ignoring it.");
                         ssid = mfree(ssid);
                 }
         }

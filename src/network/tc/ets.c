@@ -88,16 +88,15 @@ int config_parse_ets_u8(
                 void *data,
                 void *userdata) {
 
-        _cleanup_(qdisc_free_or_set_invalidp) QDisc *qdisc = NULL;
+        _cleanup_(qdisc_unref_or_set_invalidp) QDisc *qdisc = NULL;
         EnhancedTransmissionSelection *ets;
-        Network *network = data;
+        Network *network = ASSERT_PTR(data);
         uint8_t v, *p;
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = qdisc_new_static(QDISC_KIND_ETS, network, filename, section_line, &qdisc);
         if (r == -ENOMEM)
@@ -155,15 +154,14 @@ int config_parse_ets_quanta(
                 void *data,
                 void *userdata) {
 
-        _cleanup_(qdisc_free_or_set_invalidp) QDisc *qdisc = NULL;
+        _cleanup_(qdisc_unref_or_set_invalidp) QDisc *qdisc = NULL;
         EnhancedTransmissionSelection *ets;
-        Network *network = data;
+        Network *network = ASSERT_PTR(data);
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = qdisc_new_static(QDISC_KIND_ETS, network, filename, section_line, &qdisc);
         if (r == -ENOMEM)
@@ -239,15 +237,14 @@ int config_parse_ets_prio(
                 void *data,
                 void *userdata) {
 
-        _cleanup_(qdisc_free_or_set_invalidp) QDisc *qdisc = NULL;
+        _cleanup_(qdisc_unref_or_set_invalidp) QDisc *qdisc = NULL;
         EnhancedTransmissionSelection *ets;
-        Network *network = data;
+        Network *network = ASSERT_PTR(data);
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = qdisc_new_static(QDISC_KIND_ETS, network, filename, section_line, &qdisc);
         if (r == -ENOMEM)

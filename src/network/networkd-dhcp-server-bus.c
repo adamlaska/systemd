@@ -3,7 +3,7 @@
 #include "alloc-util.h"
 #include "bus-common-errors.h"
 #include "bus-util.h"
-#include "dhcp-server-internal.h"
+#include "dhcp-server-lease-internal.h"
 #include "networkd-dhcp-server-bus.h"
 #include "networkd-link-bus.h"
 #include "networkd-manager.h"
@@ -17,13 +17,12 @@ static int property_get_leases(
                 sd_bus_message *reply,
                 void *userdata,
                 sd_bus_error *error) {
-        Link *l = userdata;
+        Link *l = ASSERT_PTR(userdata);
         sd_dhcp_server *s;
-        DHCPLease *lease;
+        sd_dhcp_server_lease *lease;
         int r;
 
         assert(reply);
-        assert(l);
 
         s = l->dhcp_server;
         if (!s)
@@ -45,7 +44,7 @@ static int property_get_leases(
                 if (r < 0)
                         return r;
 
-                r = sd_bus_message_append_array(reply, 'y', lease->client_id.data, lease->client_id.length);
+                r = sd_bus_message_append_array(reply, 'y', lease->client_id.raw, lease->client_id.size);
                 if (r < 0)
                         return r;
 
@@ -96,9 +95,7 @@ static int dhcp_server_emit_changed(Link *link, const char *property, ...) {
 }
 
 void dhcp_server_callback(sd_dhcp_server *s, uint64_t event, void *data) {
-        Link *l = data;
-
-        assert(l);
+        Link *l = ASSERT_PTR(data);
 
         if (event & SD_DHCP_SERVER_EVENT_LEASE_CHANGED)
                 (void) dhcp_server_emit_changed(l, "Leases", NULL);

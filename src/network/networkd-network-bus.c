@@ -4,6 +4,7 @@
 #include "ether-addr-util.h"
 #include "networkd-manager.h"
 #include "networkd-network-bus.h"
+#include "path-util.h"
 #include "string-util.h"
 #include "strv.h"
 
@@ -54,28 +55,13 @@ static const sd_bus_vtable network_vtable[] = {
 };
 
 static char *network_bus_path(Network *network) {
-        _cleanup_free_ char *name = NULL;
-        char *networkname, *d, *path;
+        char *path;
         int r;
 
         assert(network);
-        assert(network->filename);
+        assert(network->name);
 
-        name = strdup(network->filename);
-        if (!name)
-                return NULL;
-
-        networkname = basename(name);
-
-        d = strrchr(networkname, '.');
-        if (!d)
-                return NULL;
-
-        assert(streq(d, ".network"));
-
-        *d = '\0';
-
-        r = sd_bus_path_encode("/org/freedesktop/network1/network", networkname, &path);
+        r = sd_bus_path_encode("/org/freedesktop/network1/network", network->name, &path);
         if (r < 0)
                 return NULL;
 
@@ -84,13 +70,12 @@ static char *network_bus_path(Network *network) {
 
 int network_node_enumerator(sd_bus *bus, const char *path, void *userdata, char ***nodes, sd_bus_error *error) {
         _cleanup_strv_free_ char **l = NULL;
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         Network *network;
         int r;
 
         assert(bus);
         assert(path);
-        assert(m);
         assert(nodes);
 
         ORDERED_HASHMAP_FOREACH(network, m->networks) {
@@ -111,7 +96,7 @@ int network_node_enumerator(sd_bus *bus, const char *path, void *userdata, char 
 }
 
 int network_object_find(sd_bus *bus, const char *path, const char *interface, void *userdata, void **found, sd_bus_error *error) {
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         Network *network;
         _cleanup_free_ char *name = NULL;
         int r;
@@ -119,7 +104,6 @@ int network_object_find(sd_bus *bus, const char *path, const char *interface, vo
         assert(bus);
         assert(path);
         assert(interface);
-        assert(m);
         assert(found);
 
         r = sd_bus_path_decode(path, "/org/freedesktop/network1/network", &name);

@@ -3,22 +3,32 @@
 #include <stdio.h>
 
 #include "analyze-compare-versions.h"
+#include "compare-operator.h"
 #include "macro.h"
 #include "string-util.h"
 #include "strv.h"
 
 int verb_compare_versions(int argc, char *argv[], void *userdata) {
+        const char *v1 = ASSERT_PTR(argv[1]), *v2 = ASSERT_PTR(argv[argc-1]);
         int r;
 
         assert(IN_SET(argc, 3, 4));
         assert(argv);
 
+        /* We only output a warning on invalid version strings (instead of failing), since the comparison
+         * functions try to handle invalid strings gracefully and it's still interesting to see what the
+         * comparison result will be. */
+        if (!version_is_valid_versionspec(v1))
+                log_warning("Version string 1 contains disallowed characters, they will be treated as separators: %s", v1);
+        if (!version_is_valid_versionspec(v2))
+                log_warning("Version string 2 contains disallowed characters, they will be treated as separators: %s", v2);
+
         if (argc == 3) {
-                r = strverscmp_improved(ASSERT_PTR(argv[1]), ASSERT_PTR(argv[2]));
+                r = strverscmp_improved(v1, v2);
                 printf("%s %s %s\n",
-                       isempty(argv[1]) ? "''" : argv[1],
+                       isempty(v1) ? "''" : v1,
                        comparison_operator(r),
-                       isempty(argv[2]) ? "''" : argv[2]);
+                       isempty(v2) ? "''" : v2);
 
                 /* This matches the exit convention used by rpmdev-vercmp.
                  * We don't use named values because 11 and 12 don't have names. */
@@ -26,22 +36,17 @@ int verb_compare_versions(int argc, char *argv[], void *userdata) {
 
         } else {
                 const char *op = ASSERT_PTR(argv[2]);
+                CompareOperator operator;
+                assert(argc == 4);
 
-                r = strverscmp_improved(ASSERT_PTR(argv[1]), ASSERT_PTR(argv[3]));
+                operator = parse_compare_operator(&op, COMPARE_ALLOW_TEXTUAL);
+                if (operator < 0 || !isempty(op))
+                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Unknown operator \"%s\".", op);
 
-                if (STR_IN_SET(op, "lt", "<"))
-                        return r < 0 ? EXIT_SUCCESS : EXIT_FAILURE;
-                if (STR_IN_SET(op, "le", "<="))
-                        return r <= 0 ? EXIT_SUCCESS : EXIT_FAILURE;
-                if (STR_IN_SET(op, "eq", "=="))
-                        return r == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
-                if (STR_IN_SET(op, "ne", "!="))
-                        return r != 0 ? EXIT_SUCCESS : EXIT_FAILURE;
-                if (STR_IN_SET(op, "ge", ">="))
-                        return r >= 0 ? EXIT_SUCCESS : EXIT_FAILURE;
-                if (STR_IN_SET(op, "gt", ">"))
-                        return r > 0 ? EXIT_SUCCESS : EXIT_FAILURE;
-                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                       "Unknown operator \"%s\".", op);
+                r = version_or_fnmatch_compare(operator, v1, v2);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to compare versions: %m");
+
+                return r ? EXIT_SUCCESS : EXIT_FAILURE;
         }
 }

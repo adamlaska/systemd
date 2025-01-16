@@ -12,10 +12,8 @@
 #include "bus-error.h"
 
 static int match_startup_finished(sd_bus_message *m, void *userdata, sd_bus_error *error) {
-        char **state = userdata;
+        char **state = ASSERT_PTR(userdata);
         int r;
-
-        assert(state);
 
         r = bus_get_property_string(sd_bus_message_get_bus(m), bus_systemd_mgr, "SystemState", NULL, state);
 
@@ -31,7 +29,7 @@ int verb_is_system_running(int argc, char *argv[], void *userdata) {
         sd_bus *bus;
         int r;
 
-        if (running_in_chroot() > 0 || (arg_transport == BUS_TRANSPORT_LOCAL && !sd_booted())) {
+        if (!isempty(arg_root) || running_in_chroot() > 0 || (arg_transport == BUS_TRANSPORT_LOCAL && !sd_booted())) {
                 if (!arg_quiet)
                         puts("offline");
                 return EXIT_FAILURE;

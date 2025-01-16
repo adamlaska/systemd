@@ -1,24 +1,16 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
-#if defined(__i386__) || defined(__x86_64__)
-#include <cpuid.h>
-#endif
-
 #include <elf.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/random.h>
-#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/auxv.h>
 #include <sys/ioctl.h>
 #include <sys/time.h>
-
-#if HAVE_SYS_AUXV_H
-#  include <sys/auxv.h>
-#endif
 
 #include "alloc-util.h"
 #include "env-util.h"
@@ -26,18 +18,20 @@
 #include "fd-util.h"
 #include "fileio.h"
 #include "io-util.h"
+#include "iovec-util.h"
 #include "missing_random.h"
 #include "missing_syscall.h"
+#include "missing_threads.h"
 #include "parse-util.h"
+#include "process-util.h"
 #include "random-util.h"
 #include "sha256.h"
 #include "time-util.h"
 
-/* This is a "best effort" kind of thing, but has no real security value.
- * So, this should only be used by random_bytes(), which is not meant for
- * crypto. This could be made better, but we're *not* trying to roll a
- * userspace prng here, or even have forward secrecy, but rather just do
- * the shortest thing that is at least better than libc rand(). */
+/* This is a "best effort" kind of thing, but has no real security value. So, this should only be used by
+ * random_bytes(), which is not meant for crypto. This could be made better, but we're *not* trying to roll a
+ * userspace prng here, or even have forward secrecy, but rather just do the shortest thing that is at least
+ * better than libc rand(). */
 static void fallback_random_bytes(void *p, size_t n) {
         static thread_local uint64_t fallback_counter = 0;
         struct {
@@ -48,17 +42,15 @@ static void fallback_random_bytes(void *p, size_t n) {
                 uint8_t auxval[16];
         } state = {
                 /* Arbitrary domain separation to prevent other usage of AT_RANDOM from clashing. */
-                .label = "systemd fallback random bytes v1",
                 .call_id = fallback_counter++,
                 .stamp_mono = now(CLOCK_MONOTONIC),
                 .stamp_real = now(CLOCK_REALTIME),
-                .pid = getpid(),
-                .tid = gettid()
+                .pid = getpid_cached(),
+                .tid = gettid(),
         };
 
-#if HAVE_SYS_AUXV_H
+        memcpy(state.label, "systemd fallback random bytes v1", sizeof(state.label));
         memcpy(state.auxval, ULONG_TO_PTR(getauxval(AT_RANDOM)), sizeof(state.auxval));
-#endif
 
         while (n > 0) {
                 struct sha256_ctx ctx;
@@ -79,8 +71,9 @@ static void fallback_random_bytes(void *p, size_t n) {
 }
 
 void random_bytes(void *p, size_t n) {
-        static bool have_getrandom = true, have_grndinsecure = true;
-        _cleanup_close_ int fd = -1;
+        static bool have_grndinsecure = true;
+
+        assert(p || n == 0);
 
         if (n == 0)
                 return;
@@ -88,32 +81,26 @@ void random_bytes(void *p, size_t n) {
         for (;;) {
                 ssize_t l;
 
-                if (!have_getrandom)
-                        break;
-
                 l = getrandom(p, n, have_grndinsecure ? GRND_INSECURE : GRND_NONBLOCK);
-                if (l > 0) {
-                        if ((size_t) l == n)
-                                return; /* Done reading, success. */
-                        p = (uint8_t *) p + l;
-                        n -= l;
-                        continue; /* Interrupted by a signal; keep going. */
-                } else if (l == 0)
-                        break; /* Weird, so fallback to /dev/urandom. */
-                else if (ERRNO_IS_NOT_SUPPORTED(errno)) {
-                        have_getrandom = false;
-                        break; /* No syscall, so fallback to /dev/urandom. */
-                } else if (errno == EINVAL && have_grndinsecure) {
+                if (l < 0 && errno == EINVAL && have_grndinsecure) {
+                        /* No GRND_INSECURE; fallback to GRND_NONBLOCK. */
                         have_grndinsecure = false;
-                        continue; /* No GRND_INSECURE; fallback to GRND_NONBLOCK. */
-                } else if (errno == EAGAIN && !have_grndinsecure)
-                        break; /* Will block, but no GRND_INSECURE, so fallback to /dev/urandom. */
+                        continue;
+                }
+                if (l <= 0)
+                        break; /* Will block (with GRND_NONBLOCK), or unexpected error. Give up and fallback
+                                  to /dev/urandom. */
 
-                break; /* Unexpected, so just give up and fallback to /dev/urandom. */
+                if ((size_t) l == n)
+                        return; /* Done reading, success. */
+
+                p = (uint8_t *) p + l;
+                n -= l;
+                /* Interrupted by a signal; keep going. */
         }
 
-        fd = open("/dev/urandom", O_RDONLY|O_CLOEXEC|O_NOCTTY);
-        if (fd >= 0 && loop_read_exact(fd, p, n, false) == 0)
+        _cleanup_close_ int fd = open("/dev/urandom", O_RDONLY|O_CLOEXEC|O_NOCTTY);
+        if (fd >= 0 && loop_read_exact(fd, p, n, false) >= 0)
                 return;
 
         /* This is a terrible fallback. Oh well. */
@@ -121,8 +108,7 @@ void random_bytes(void *p, size_t n) {
 }
 
 int crypto_random_bytes(void *p, size_t n) {
-        static bool have_getrandom = true, seen_initialized = false;
-        _cleanup_close_ int fd = -1;
+        assert(p || n == 0);
 
         if (n == 0)
                 return 0;
@@ -130,42 +116,37 @@ int crypto_random_bytes(void *p, size_t n) {
         for (;;) {
                 ssize_t l;
 
-                if (!have_getrandom)
-                        break;
-
                 l = getrandom(p, n, 0);
-                if (l > 0) {
-                        if ((size_t) l == n)
-                                return 0; /* Done reading, success. */
-                        p = (uint8_t *) p + l;
-                        n -= l;
-                        continue; /* Interrupted by a signal; keep going. */
-                } else if (l == 0)
-                        return -EIO; /* Weird, should never happen. */
-                else if (ERRNO_IS_NOT_SUPPORTED(errno)) {
-                        have_getrandom = false;
-                        break; /* No syscall, so fallback to /dev/urandom. */
-                }
-                return -errno;
-        }
-
-        if (!seen_initialized) {
-                _cleanup_close_ int ready_fd = -1;
-                int r;
-
-                ready_fd = open("/dev/random", O_RDONLY|O_CLOEXEC|O_NOCTTY);
-                if (ready_fd < 0)
+                if (l < 0)
                         return -errno;
-                r = fd_wait_for_event(ready_fd, POLLIN, USEC_INFINITY);
-                if (r < 0)
-                        return r;
-                seen_initialized = true;
-        }
+                if (l == 0)
+                        return -EIO; /* Weird, should never happen. */
 
-        fd = open("/dev/urandom", O_RDONLY|O_CLOEXEC|O_NOCTTY);
-        if (fd < 0)
-                return -errno;
-        return loop_read_exact(fd, p, n, false);
+                if ((size_t) l == n)
+                        return 0; /* Done reading, success. */
+
+                p = (uint8_t *) p + l;
+                n -= l;
+                /* Interrupted by a signal; keep going. */
+        }
+}
+
+int crypto_random_bytes_allocate_iovec(size_t n, struct iovec *ret) {
+        _cleanup_free_ void *p = NULL;
+        int r;
+
+        assert(ret);
+
+        p = malloc(MAX(n, 1U));
+        if (!p)
+                return -ENOMEM;
+
+        r = crypto_random_bytes(p, n);
+        if (r < 0)
+                return r;
+
+        *ret = IOVEC_MAKE(TAKE_PTR(p), n);
+        return 0;
 }
 
 size_t random_pool_size(void) {
@@ -192,7 +173,7 @@ size_t random_pool_size(void) {
 }
 
 int random_write_entropy(int fd, const void *seed, size_t size, bool credit) {
-        _cleanup_close_ int opened_fd = -1;
+        _cleanup_close_ int opened_fd = -EBADF;
         int r;
 
         assert(seed || size == 0);
@@ -227,7 +208,7 @@ int random_write_entropy(int fd, const void *seed, size_t size, bool credit) {
                 if (ioctl(fd, RNDADDENTROPY, info) < 0)
                         return -errno;
         } else {
-                r = loop_write(fd, seed, size, false);
+                r = loop_write(fd, seed, size);
                 if (r < 0)
                         return r;
         }

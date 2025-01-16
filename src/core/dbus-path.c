@@ -21,12 +21,11 @@ static int property_get_paths(
                 void *userdata,
                 sd_bus_error *error) {
 
-        Path *p = userdata;
+        Path *p = ASSERT_PTR(userdata);
         int r;
 
         assert(bus);
         assert(reply);
-        assert(p);
 
         r = sd_bus_message_open_container(reply, 'a', "(ss)");
         if (r < 0)
@@ -98,22 +97,21 @@ static int bus_path_set_transient_property(
 
                         if (!UNIT_WRITE_FLAGS_NOOP(flags)) {
                                 _cleanup_free_ char *k = NULL;
-                                PathSpec *s;
 
-                                k = strdup(path);
-                                if (!k)
-                                        return -ENOMEM;
+                                r = path_simplify_alloc(path, &k);
+                                if (r < 0)
+                                        return r;
 
-                                path_simplify(k);
-
-                                s = new0(PathSpec, 1);
+                                PathSpec *s = new(PathSpec, 1);
                                 if (!s)
                                         return -ENOMEM;
 
-                                s->unit = u;
-                                s->path = TAKE_PTR(k);
-                                s->type = t;
-                                s->inotify_fd = -1;
+                                *s = (PathSpec) {
+                                        .unit = u,
+                                        .path = TAKE_PTR(k),
+                                        .type = t,
+                                        .inotify_fd = -EBADF,
+                                };
 
                                 LIST_PREPEND(spec, p->specs, s);
 

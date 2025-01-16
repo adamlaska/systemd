@@ -41,7 +41,7 @@ static int property_get_pool_usage(
                 void *userdata,
                 sd_bus_error *error) {
 
-        _cleanup_close_ int fd = -1;
+        _cleanup_close_ int fd = -EBADF;
         uint64_t usage = UINT64_MAX;
 
         assert(bus);
@@ -67,7 +67,7 @@ static int property_get_pool_limit(
                 void *userdata,
                 sd_bus_error *error) {
 
-        _cleanup_close_ int fd = -1;
+        _cleanup_close_ int fd = -EBADF;
         uint64_t size = UINT64_MAX;
 
         assert(bus);
@@ -108,13 +108,12 @@ static int property_get_profiles(
 
 static int method_get_image(sd_bus_message *message, void *userdata, sd_bus_error *error) {
         _cleanup_free_ char *p = NULL;
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         const char *name;
         Image *image;
         int r;
 
         assert(message);
-        assert(m);
 
         r = sd_bus_message_read(message, "s", &name);
         if (r < 0)
@@ -134,12 +133,11 @@ static int method_get_image(sd_bus_message *message, void *userdata, sd_bus_erro
 static int method_list_images(sd_bus_message *message, void *userdata, sd_bus_error *error) {
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         _cleanup_hashmap_free_ Hashmap *images = NULL;
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         Image *image;
         int r;
 
         assert(message);
-        assert(m);
 
         images = hashmap_new(&image_hash_ops);
         if (!images)
@@ -167,6 +165,7 @@ static int method_list_images(sd_bus_message *message, void *userdata, sd_bus_er
                         return r;
 
                 r = portable_get_state(
+                                m->runtime_scope,
                                 sd_bus_message_get_bus(message),
                                 image->path,
                                 NULL,
@@ -227,6 +226,7 @@ static int method_get_image_metadata(sd_bus_message *message, void *userdata, sd
 
 static int method_get_image_state(sd_bus_message *message, void *userdata, sd_bus_error *error) {
         _cleanup_strv_free_ char **extension_images = NULL;
+        Manager *m = ASSERT_PTR(userdata);
         const char *name_or_path;
         PortableState state;
         int r;
@@ -256,6 +256,7 @@ static int method_get_image_state(sd_bus_message *message, void *userdata, sd_bu
         }
 
         r = portable_get_state(
+                        m->runtime_scope,
                         sd_bus_message_get_bus(message),
                         name_or_path,
                         extension_images,
@@ -276,13 +277,14 @@ static int method_detach_image(sd_bus_message *message, void *userdata, sd_bus_e
         _cleanup_strv_free_ char **extension_images = NULL;
         PortableChange *changes = NULL;
         PortableFlags flags = 0;
-        Manager *m = userdata;
+        Manager *m = ASSERT_PTR(userdata);
         size_t n_changes = 0;
         const char *name_or_path;
         int r;
 
         assert(message);
-        assert(m);
+
+        CLEANUP_ARRAY(changes, n_changes, portable_changes_free);
 
         /* Note that we do not redirect detaching to the image object here, because we want to allow that users can
          * detach already deleted images too, in case the user already deleted an image before properly detaching
@@ -321,11 +323,8 @@ static int method_detach_image(sd_bus_message *message, void *userdata, sd_bus_e
 
         r = bus_verify_polkit_async(
                         message,
-                        CAP_SYS_ADMIN,
                         "org.freedesktop.portable1.attach-images",
-                        NULL,
-                        false,
-                        UID_INVALID,
+                        /* details= */ NULL,
                         &m->polkit_registry,
                         error);
         if (r < 0)
@@ -334,6 +333,7 @@ static int method_detach_image(sd_bus_message *message, void *userdata, sd_bus_e
                 return 1; /* Will call us back */
 
         r = portable_detach(
+                        m->runtime_scope,
                         sd_bus_message_get_bus(message),
                         name_or_path,
                         extension_images,
@@ -342,13 +342,9 @@ static int method_detach_image(sd_bus_message *message, void *userdata, sd_bus_e
                         &n_changes,
                         error);
         if (r < 0)
-                goto finish;
+                return r;
 
-        r = reply_portable_changes(message, changes, n_changes);
-
-finish:
-        portable_changes_free(changes, n_changes);
-        return r;
+        return reply_portable_changes(message, changes, n_changes);
 }
 
 static int method_reattach_image(sd_bus_message *message, void *userdata, sd_bus_error *error) {
@@ -382,11 +378,8 @@ static int method_set_pool_limit(sd_bus_message *message, void *userdata, sd_bus
 
         r = bus_verify_polkit_async(
                         message,
-                        CAP_SYS_ADMIN,
                         "org.freedesktop.portable1.manage-images",
-                        NULL,
-                        false,
-                        UID_INVALID,
+                        /* details= */ NULL,
                         &m->polkit_registry,
                         error);
         if (r < 0)

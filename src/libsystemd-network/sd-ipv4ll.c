@@ -20,7 +20,6 @@
 #include "siphash24.h"
 #include "sparse-endian.h"
 #include "string-util.h"
-#include "util.h"
 
 #define IPV4LL_NETWORK UINT32_C(0xA9FE0000)
 #define IPV4LL_NETMASK UINT32_C(0xFFFF0000)
@@ -207,7 +206,8 @@ int sd_ipv4ll_set_address_seed(sd_ipv4ll *ll, uint64_t seed) {
 }
 
 int sd_ipv4ll_is_running(sd_ipv4ll *ll) {
-        assert_return(ll, false);
+        if (!ll)
+                return false;
 
         return sd_ipv4acd_is_running(ll->acd);
 }
@@ -313,12 +313,11 @@ static void ipv4ll_client_notify(sd_ipv4ll *ll, int event) {
 }
 
 void ipv4ll_on_acd(sd_ipv4acd *acd, int event, void *userdata) {
-        sd_ipv4ll *ll = userdata;
+        sd_ipv4ll *ll = ASSERT_PTR(userdata);
         IPV4LL_DONT_DESTROY(ll);
         int r;
 
         assert(acd);
-        assert(ll);
 
         switch (event) {
 
@@ -358,9 +357,7 @@ error:
 }
 
 static int ipv4ll_check_mac(sd_ipv4acd *acd, const struct ether_addr *mac, void *userdata) {
-        sd_ipv4ll *ll = userdata;
-
-        assert(ll);
+        sd_ipv4ll *ll = ASSERT_PTR(userdata);
 
         if (ll->check_mac_callback)
                 return ll->check_mac_callback(ll, mac, ll->check_mac_userdata);

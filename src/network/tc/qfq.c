@@ -62,16 +62,15 @@ int config_parse_quick_fair_queueing_weight(
                 void *data,
                 void *userdata) {
 
-        _cleanup_(tclass_free_or_set_invalidp) TClass *tclass = NULL;
+        _cleanup_(tclass_unref_or_set_invalidp) TClass *tclass = NULL;
         QuickFairQueueingClass *qfq;
-        Network *network = data;
+        Network *network = ASSERT_PTR(data);
         uint32_t v;
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = tclass_new_static(TCLASS_KIND_QFQ, network, filename, section_line, &tclass);
         if (r == -ENOMEM)
@@ -123,16 +122,15 @@ int config_parse_quick_fair_queueing_max_packet(
                 void *data,
                 void *userdata) {
 
-        _cleanup_(tclass_free_or_set_invalidp) TClass *tclass = NULL;
+        _cleanup_(tclass_unref_or_set_invalidp) TClass *tclass = NULL;
         QuickFairQueueingClass *qfq;
-        Network *network = data;
+        Network *network = ASSERT_PTR(data);
         uint64_t v;
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = tclass_new_static(TCLASS_KIND_QFQ, network, filename, section_line, &tclass);
         if (r == -ENOMEM)

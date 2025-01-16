@@ -5,7 +5,7 @@ import re
 import sys
 import uuid
 
-HEADER = f'''\
+HEADER = '''\
 | Name | Partition Type UUID | Allowed File Systems | Explanation |
 |------|---------------------|----------------------|-------------|
 '''
@@ -19,6 +19,7 @@ ARCHITECTURES = {
     'LOONGARCH64': 'LoongArch 64-bit',
     'MIPS_LE':     '32-bit MIPS LittleEndian (mipsel)',
     'MIPS64_LE':   '64-bit MIPS LittleEndian (mips64el)',
+    'PARISC':      'HPPA/PARISC',
     'PPC':         '32-bit PowerPC',
     'PPC64':       '64-bit PowerPC BigEndian',
     'PPC64_LE':    '64-bit PowerPC LittleEndian',
@@ -54,7 +55,7 @@ DESCRIPTIONS = {
     'ROOT': (
         'Any native, optionally in LUKS',
         'On systems with matching architecture, the first partition with this type UUID on the disk '
-        'containing the active EFI ESP is automatically mounted to the root directory <tt>/</tt>. '
+        'containing the active EFI ESP is automatically mounted to the root directory `/`. '
         'If the partition is encrypted with LUKS or has dm-verity integrity data (see below), the '
         'device mapper file will be named `/dev/mapper/root`.'),
     'USR': (
@@ -87,9 +88,10 @@ DESCRIPTIONS = {
     'XBOOTLDR': (
         'Typically VFAT',
         'The Extended Boot Loader Partition (XBOOTLDR) used for the current boot is automatically '
-        'mounted to <tt>/boot/</tt>, unless a different partition is mounted there (possibly via '
-        '<tt>/etc/fstab</tt>) or the directory is non-empty on the root disk. This partition type '
-        'is defined by the [Boot Loader Specification](https://systemd.io/BOOT_LOADER_SPECIFICATION).'),
+        'mounted to `/boot/`, unless a different partition is mounted there (possibly via '
+        '`/etc/fstab`) or the directory is non-empty on the root disk. This partition type '
+        'is defined by the [Boot Loader '
+        'Specification](https://uapi-group.org/specifications/specs/boot_loader_specification).'),
     'SWAP': (
         'Swap, optionally in LUKS',
         'All swap partitions on the disk containing the root partition are automatically enabled. '
@@ -123,7 +125,7 @@ DESCRIPTIONS = {
         'automatically mounted to `/var/tmp/`. If the partition is encrypted with LUKS, the '
         'device mapper file will be named `/dev/mapper/tmp`. Note that the intended mount point '
         'is indeed `/var/tmp/`, not `/tmp/`. The latter is typically maintained in memory via '
-        '<tt>tmpfs</tt> and does not require a partition on disk. In some cases it might be '
+        '`tmpfs` and does not require a partition on disk. In some cases it might be '
         'desirable to make `/tmp/` persistent too, in which case it is recommended to make it '
         'a symlink or bind mount to `/var/tmp/`, thus not requiring its own partition type UUID.'),
     'USER_HOME': (
@@ -134,34 +136,34 @@ DESCRIPTIONS = {
         'Any native, optionally in LUKS',
         'No automatic mounting takes place for other Linux data partitions. This partition type '
         'should be used for all partitions that carry Linux file systems. The installer needs '
-        'to mount them explicitly via entries in <tt>/etc/fstab</tt>. Optionally, these '
-        'partitions may be encrypted with LUKS. This partition type predates the Discoverable '
-        'Partitions Specification.'),
+        'to mount them explicitly via entries in `/etc/fstab`. Optionally, these partitions may '
+        'be encrypted with LUKS. This partition type predates the Discoverable Partitions Specification.'),
 }
 
 def extract(file):
     for line in file:
         # print(line)
-        m = re.match(r'^#define\s+GPT_(.*SD_ID128_MAKE\(.*\))', line)
+        m = re.match(r'^#define\s+SD_GPT_(.*SD_ID128_MAKE\(.*\))', line)
         if not m:
             continue
 
+        name = line.split()[1]
         if m2 := re.match(r'^(ROOT|USR)_([A-Z0-9]+|X86_64|PPC64_LE|MIPS_LE|MIPS64_LE)(|_VERITY|_VERITY_SIG)\s+SD_ID128_MAKE\((.*)\)', m.group(1)):
-            type, arch, suffix, u = m2.groups()
+            ptype, arch, suffix, u = m2.groups()
             u = uuid.UUID(u.replace(',', ''))
-            assert arch in ARCHITECTURES
-            type = f'{type}{suffix}'
-            assert type in TYPES
+            assert arch in ARCHITECTURES, f'{arch} not in f{ARCHITECTURES}'
+            ptype = f'{type}{suffix}'
+            assert ptype in TYPES
 
-            yield type, arch, u
+            yield name, ptype, arch, u
 
         elif m2 := re.match(r'(\w+)\s+SD_ID128_MAKE\((.*)\)', m.group(1)):
-            type, u = m2.groups()
+            ptype, u = m2.groups()
             u = uuid.UUID(u.replace(',', ''))
-            yield type, None, u
+            yield name, ptype, None, u
 
         else:
-            raise Exception(f'Failed to match: {m.group(1)}')
+            raise ValueError(f'Failed to match: {m.group(1)}')
 
 def generate(defines):
     prevtype = None
@@ -170,21 +172,21 @@ def generate(defines):
 
     uuids = set()
 
-    for type, arch, uuid in defines:
-        tdesc = TYPES[type]
+    for name, ptype, arch, puuid in defines:
+        tdesc = TYPES[ptype]
         adesc = '' if arch is None else f' ({ARCHITECTURES[arch]})'
 
         # Let's make sure that we didn't select&paste the same value twice
-        assert uuid not in uuids
-        uuids.add(uuid)
+        assert puuid not in uuids
+        uuids.add(puuid)
 
-        if type != prevtype:
-            prevtype = type
-            morea, moreb = DESCRIPTIONS[type]
+        if ptype != prevtype:
+            prevtype = ptype
+            morea, moreb = DESCRIPTIONS[ptype]
         else:
             morea = moreb = 'ditto'
 
-        print(f'| _{tdesc}{adesc}_ | `{uuid}` | {morea} | {moreb} |')
+        print(f'| _{tdesc}{adesc}_ | `{puuid}` `{name}` | {morea} | {moreb} |')
 
 if __name__ == '__main__':
     known = extract(sys.stdin)

@@ -2,7 +2,7 @@
  * Copyright © 2020 VMware, Inc. */
 
 #include "device-enumerator-private.h"
-#include "dirent-util.h"
+#include "device-util.h"
 #include "fd-util.h"
 #include "networkd-link.h"
 #include "networkd-manager.h"
@@ -194,28 +194,17 @@ static int manager_update_sr_iov_ifindices(Manager *manager, int phys_port_ifind
         return 0;
 }
 
-static int link_set_sr_iov_phys_port(Link *link) {
+static int link_set_sr_iov_phys_port(Link *link, sd_device *pci_dev, const char *dev_port) {
         _cleanup_(sd_device_unrefp) sd_device *pci_physfn_dev = NULL;
-        const char *dev_port;
-        sd_device *pci_dev;
         int r;
 
         assert(link);
         assert(link->manager);
+        assert(pci_dev);
+        assert(dev_port);
 
         if (link->sr_iov_phys_port_ifindex > 0)
                 return 0;
-
-        if (!link->dev)
-                return -ENODEV;
-
-        r = sd_device_get_sysattr_value(link->dev, "dev_port", &dev_port);
-        if (r < 0)
-                return r;
-
-        r = sd_device_get_parent_with_subsystem_devtype(link->dev, "pci", NULL, &pci_dev);
-        if (r < 0)
-                return r;
 
         r = sd_device_new_child(&pci_physfn_dev, pci_dev, "physfn");
         if (r < 0)
@@ -228,50 +217,27 @@ static int link_set_sr_iov_phys_port(Link *link) {
         return manager_update_sr_iov_ifindices(link->manager, r, link->ifindex);
 }
 
-static int link_set_sr_iov_virt_ports(Link *link) {
-        const char *dev_port, *pci_syspath;
-        _cleanup_closedir_ DIR *dir = NULL;
-        sd_device *pci_dev;
+static int link_set_sr_iov_virt_ports(Link *link, sd_device *pci_dev, const char *dev_port) {
+        const char *name;
         int r;
 
         assert(link);
         assert(link->manager);
+        assert(pci_dev);
+        assert(dev_port);
 
         set_clear(link->sr_iov_virt_port_ifindices);
 
-        if (!link->dev)
-                return -ENODEV;
-
-        r = sd_device_get_sysattr_value(link->dev, "dev_port", &dev_port);
-        if (r < 0)
-                return r;
-
-        r = sd_device_get_parent_with_subsystem_devtype(link->dev, "pci", NULL, &pci_dev);
-        if (r < 0)
-                return r;
-
-        r = sd_device_get_syspath(pci_dev, &pci_syspath);
-        if (r < 0)
-                return r;
-
-        dir = opendir(pci_syspath);
-        if (!dir)
-                return -errno;
-
-        FOREACH_DIRENT_ALL(de, dir, break) {
-                _cleanup_(sd_device_unrefp) sd_device *pci_virtfn_dev = NULL;
-
-                if (de->d_type != DT_LNK)
-                        continue;
+        FOREACH_DEVICE_CHILD_WITH_SUFFIX(pci_dev, child, name) {
+                const char *n;
 
                 /* Accept name prefixed with "virtfn", but refuse "virtfn" itself. */
-                if (isempty(startswith(de->d_name, "virtfn")))
+                n = startswith(name, "virtfn");
+                if (isempty(n) || !in_charset(n, DIGITS))
                         continue;
 
-                if (sd_device_new_child(&pci_virtfn_dev, pci_dev, de->d_name) < 0)
-                        continue;
-
-                if (find_ifindex_from_pci_dev_port(pci_virtfn_dev, dev_port) < 0)
+                r = find_ifindex_from_pci_dev_port(child, dev_port);
+                if (r < 0)
                         continue;
 
                 if (manager_update_sr_iov_ifindices(link->manager, link->ifindex, r) < 0)
@@ -282,17 +248,36 @@ static int link_set_sr_iov_virt_ports(Link *link) {
 }
 
 int link_set_sr_iov_ifindices(Link *link) {
+        const char *dev_port;
+        sd_device *pci_dev;
         int r;
 
         assert(link);
 
-        r = link_set_sr_iov_phys_port(link);
-        if (r < 0 && !ERRNO_IS_DEVICE_ABSENT(r))
-                return r;
+        if (!link->dev)
+                return -ENODEV;
 
-        r = link_set_sr_iov_virt_ports(link);
+        r = sd_device_get_parent_with_subsystem_devtype(link->dev, "pci", NULL, &pci_dev);
+        if (ERRNO_IS_NEG_DEVICE_ABSENT(r))
+                return 0;
+        if (r < 0)
+                return log_link_debug_errno(link, r, "Failed to get parent PCI device: %m");
+
+        /* This may return -EINVAL or -ENODEV, instead of -ENOENT, if the device has been removed or is being
+         * removed. Let's ignore the error codes here. */
+        r = sd_device_get_sysattr_value(link->dev, "dev_port", &dev_port);
+        if (ERRNO_IS_NEG_DEVICE_ABSENT(r) || r == -EINVAL)
+                return 0;
+        if (r < 0)
+                return log_link_debug_errno(link, r, "Failed to get 'dev_port' sysfs attribute: %m");
+
+        r = link_set_sr_iov_phys_port(link, pci_dev, dev_port);
         if (r < 0 && !ERRNO_IS_DEVICE_ABSENT(r))
-                return r;
+                return log_link_debug_errno(link, r, "Failed to set SR-IOV physical port: %m");
+
+        r = link_set_sr_iov_virt_ports(link, pci_dev, dev_port);
+        if (r < 0 && !ERRNO_IS_DEVICE_ABSENT(r))
+                return log_link_debug_errno(link, r, "Failed to set SR-IOV virtual ports: %m");
 
         return 0;
 }

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
-#ifndef _UAPI__LINUX_RTNETLINK_H
-#define _UAPI__LINUX_RTNETLINK_H
+#ifndef __LINUX_RTNETLINK_H
+#define __LINUX_RTNETLINK_H
 
 #include <linux/types.h>
 #include <linux/netlink.h>
@@ -174,7 +174,7 @@ enum {
 #define RTM_GETLINKPROP	RTM_GETLINKPROP
 
 	RTM_NEWVLAN = 112,
-#define RTM_NEWNVLAN	RTM_NEWVLAN
+#define RTM_NEWVLAN	RTM_NEWVLAN
 	RTM_DELVLAN,
 #define RTM_DELVLAN	RTM_DELVLAN
 	RTM_GETVLAN,
@@ -440,7 +440,7 @@ struct rtnexthop {
 /* RTA_VIA */
 struct rtvia {
 	__kernel_sa_family_t	rtvia_family;
-	__u8			rtvia_addr[0];
+	__u8			rtvia_addr[];
 };
 
 /* RTM_CACHEINFO */
@@ -502,13 +502,17 @@ enum {
 
 #define RTAX_MAX (__RTAX_MAX - 1)
 
-#define RTAX_FEATURE_ECN	(1 << 0)
-#define RTAX_FEATURE_SACK	(1 << 1)
-#define RTAX_FEATURE_TIMESTAMP	(1 << 2)
-#define RTAX_FEATURE_ALLFRAG	(1 << 3)
+#define RTAX_FEATURE_ECN		(1 << 0)
+#define RTAX_FEATURE_SACK		(1 << 1) /* unused */
+#define RTAX_FEATURE_TIMESTAMP		(1 << 2) /* unused */
+#define RTAX_FEATURE_ALLFRAG		(1 << 3) /* unused */
+#define RTAX_FEATURE_TCP_USEC_TS	(1 << 4)
 
-#define RTAX_FEATURE_MASK	(RTAX_FEATURE_ECN | RTAX_FEATURE_SACK | \
-				 RTAX_FEATURE_TIMESTAMP | RTAX_FEATURE_ALLFRAG)
+#define RTAX_FEATURE_MASK	(RTAX_FEATURE_ECN |		\
+				 RTAX_FEATURE_SACK |		\
+				 RTAX_FEATURE_TIMESTAMP |	\
+				 RTAX_FEATURE_ALLFRAG |		\
+				 RTAX_FEATURE_TCP_USEC_TS)
 
 struct rta_session {
 	__u8	proto;
@@ -635,6 +639,7 @@ enum {
 	TCA_INGRESS_BLOCK,
 	TCA_EGRESS_BLOCK,
 	TCA_DUMP_FLAGS,
+	TCA_EXT_WARN_MSG,
 	__TCA_MAX
 };
 
@@ -672,7 +677,6 @@ enum {
 
 #define NDUSEROPT_MAX	(__NDUSEROPT_MAX - 1)
 
-#ifndef __KERNEL__
 /* RTnetlink multicast groups - backwards compatibility for userspace */
 #define RTMGRP_LINK		1
 #define RTMGRP_NOTIFY		2
@@ -693,7 +697,6 @@ enum {
 #define RTMGRP_DECnet_ROUTE     0x4000
 
 #define RTMGRP_IPV6_PREFIX	0x20000
-#endif
 
 /* RTnetlink multicast groups */
 enum rtnetlink_groups {
@@ -788,6 +791,7 @@ enum {
 	TCA_ROOT_FLAGS,
 	TCA_ROOT_COUNT,
 	TCA_ROOT_TIME_DELTA, /* in msecs */
+	TCA_ROOT_EXT_WARN_MSG,
 	__TCA_ROOT_MAX,
 #define	TCA_ROOT_MAX (__TCA_ROOT_MAX - 1)
 };
@@ -823,4 +827,4 @@ enum {
 
 
 
-#endif /* _UAPI__LINUX_RTNETLINK_H */
+#endif /* __LINUX_RTNETLINK_H */

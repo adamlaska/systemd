@@ -11,31 +11,36 @@
 #include "device-util.h"
 #include "fd-util.h"
 #include "fileio.h"
+#include "id128-util.h"
 #include "parse-util.h"
 #include "path-util.h"
 #include "process-util.h"
 #include "set.h"
+#include "static-destruct.h"
 #include "string-util.h"
 #include "strv.h"
 #include "udevadm.h"
 #include "udevadm-util.h"
-#include "udev-ctrl.h"
 #include "virt.h"
 
 static bool arg_verbose = false;
 static bool arg_dry_run = false;
 static bool arg_quiet = false;
 static bool arg_uuid = false;
+static bool arg_settle = false;
 
 static int exec_list(
                 sd_device_enumerator *e,
                 sd_device_action_t action,
-                Hashmap *settle_hashmap) {
+                Set **ret_settle_path_or_ids) {
 
-        bool skip_uuid_logic = false;
+        _cleanup_set_free_ Set *settle_path_or_ids = NULL;
+        int uuid_supported = -1;
         const char *action_str;
         sd_device *d;
         int r, ret = 0;
+
+        assert(e);
 
         action_str = device_action_to_string(action);
 
@@ -57,14 +62,14 @@ static int exec_list(
 
                 /* Use the UUID mode if the user explicitly asked for it, or if --settle has been specified,
                  * so that we can recognize our own uevent. */
-                r = sd_device_trigger_with_uuid(d, action, (arg_uuid || settle_hashmap) && !skip_uuid_logic ? &id : NULL);
-                if (r == -EINVAL && !arg_uuid && settle_hashmap && !skip_uuid_logic) {
+                r = sd_device_trigger_with_uuid(d, action, (arg_uuid || arg_settle) && uuid_supported != 0 ? &id : NULL);
+                if (r == -EINVAL && !arg_uuid && arg_settle && uuid_supported < 0) {
                         /* If we specified a UUID because of the settling logic, and we got EINVAL this might
                          * be caused by an old kernel which doesn't know the UUID logic (pre-4.13). Let's try
                          * if it works without the UUID logic then. */
                         r = sd_device_trigger(d, action);
                         if (r != -EINVAL)
-                                skip_uuid_logic = true; /* dropping the uuid stuff changed the return code,
+                                uuid_supported = false; /* dropping the uuid stuff changed the return code,
                                                          * hence don't bother next time */
                 }
                 if (r < 0) {
@@ -81,7 +86,7 @@ static int exec_list(
                          * EROFS is returned when /sys is read only. In that case, all subsequent
                          * writes will also fail, hence return immediately.
                          *
-                         * EACCES or EPERM may be returned when this is invoked by non-priviledged user.
+                         * EACCES or EPERM may be returned when this is invoked by non-privileged user.
                          * We do NOT return immediately, but continue operation and propagate the error.
                          * Why? Some device can be owned by a user, e.g., network devices configured in
                          * a network namespace. See, https://github.com/systemd/systemd/pull/18559 and
@@ -106,68 +111,103 @@ static int exec_list(
                         if (ret == 0 && !ignore)
                                 ret = r;
                         continue;
-                }
+                } else
+                        log_device_debug(d, "Triggered device with action '%s'.", action_str);
+
+                if (uuid_supported < 0)
+                        uuid_supported = true;
 
                 /* If the user asked for it, write event UUID to stdout */
                 if (arg_uuid)
                         printf(SD_ID128_UUID_FORMAT_STR "\n", SD_ID128_FORMAT_VAL(id));
 
-                if (settle_hashmap) {
-                        _cleanup_free_ sd_id128_t *mid = NULL;
-                        _cleanup_free_ char *sp = NULL;
+                if (arg_settle) {
+                        if (uuid_supported) {
+                                sd_id128_t *dup;
 
-                        sp = strdup(syspath);
-                        if (!sp)
-                                return log_oom();
+                                dup = newdup(sd_id128_t, &id, 1);
+                                if (!dup)
+                                        return log_oom();
 
-                        mid = newdup(sd_id128_t, &id, 1);
-                        if (!d)
-                                return log_oom();
+                                r = set_ensure_consume(&settle_path_or_ids, &id128_hash_ops_free, dup);
+                        } else {
+                                char *dup;
 
-                        r = hashmap_put(settle_hashmap, sp, mid);
+                                dup = strdup(syspath);
+                                if (!dup)
+                                        return log_oom();
+
+                                r = set_ensure_consume(&settle_path_or_ids, &path_hash_ops_free, dup);
+                        }
                         if (r < 0)
                                 return log_oom();
-
-                        TAKE_PTR(sp);
-                        TAKE_PTR(mid);
                 }
         }
+
+        if (ret_settle_path_or_ids)
+                *ret_settle_path_or_ids = TAKE_PTR(settle_path_or_ids);
 
         return ret;
 }
 
 static int device_monitor_handler(sd_device_monitor *m, sd_device *dev, void *userdata) {
-        Hashmap *settle_hashmap = userdata;
-        sd_id128_t *settle_id;
+        Set *settle_path_or_ids = * (Set**) ASSERT_PTR(userdata);
         const char *syspath;
-        char *k;
+        sd_id128_t id;
         int r;
 
         assert(dev);
-        assert(settle_hashmap);
 
         r = sd_device_get_syspath(dev, &syspath);
         if (r < 0) {
-                log_debug_errno(r, "Failed to get syspath of device event, ignoring: %m");
+                log_device_debug_errno(dev, r, "Failed to get syspath of device event, ignoring: %m");
                 return 0;
         }
 
-        settle_id = hashmap_get2(settle_hashmap, syspath, (void**) &k);
-        if (!settle_id) {
-                log_debug("Got uevent for unexpected device '%s', ignoring.", syspath);
-                return 0;
-        }
-        if (!sd_id128_is_null(*settle_id)) { /* If this is SD_ID128_NULL then we are on pre-4.13 and have no UUID to check, hence don't */
-                sd_id128_t event_id;
+        if (sd_device_get_trigger_uuid(dev, &id) >= 0) {
+                _cleanup_free_ sd_id128_t *saved = NULL;
 
-                r = sd_device_get_trigger_uuid(dev, &event_id);
-                if (r < 0) {
-                        log_debug_errno(r, "Got uevent without synthetic UUID for device '%s', ignoring: %m", syspath);
+                saved = set_remove(settle_path_or_ids, &id);
+                if (!saved) {
+                        log_device_debug(dev, "Got uevent not matching expected UUID, ignoring.");
                         return 0;
                 }
+        } else {
+                _cleanup_free_ char *saved = NULL;
 
-                if (!sd_id128_equal(event_id, *settle_id)) {
-                        log_debug("Got uevent not matching expected UUID for device '%s', ignoring.", syspath);
+                saved = set_remove(settle_path_or_ids, syspath);
+                if (!saved) {
+                        const char *old_sysname;
+
+                        /* When the device is renamed, the new name is broadcast, and the old name is saved
+                         * in INTERFACE_OLD.
+                         *
+                         * TODO: remove support for INTERFACE_OLD when kernel baseline is bumped to 4.13 or
+                         * higher. See 1193448cb68e5a90cab027e16a093bbd367e9494.
+                         */
+
+                        if (sd_device_get_property_value(dev, "INTERFACE_OLD", &old_sysname) >= 0) {
+                                _cleanup_free_ char *dir = NULL, *old_syspath = NULL;
+
+                                r = path_extract_directory(syspath, &dir);
+                                if (r < 0) {
+                                        log_device_debug_errno(dev, r,
+                                                               "Failed to extract directory from '%s', ignoring: %m",
+                                                               syspath);
+                                        return 0;
+                                }
+
+                                old_syspath = path_join(dir, old_sysname);
+                                if (!old_syspath) {
+                                        log_oom_debug();
+                                        return 0;
+                                }
+
+                                saved = set_remove(settle_path_or_ids, old_syspath);
+                        }
+                }
+                if (!saved) {
+                        log_device_debug(dev, "Got uevent for unexpected device, ignoring.");
                         return 0;
                 }
         }
@@ -176,12 +216,9 @@ static int device_monitor_handler(sd_device_monitor *m, sd_device *dev, void *us
                 printf("settle %s\n", syspath);
 
         if (arg_uuid)
-                printf("settle " SD_ID128_UUID_FORMAT_STR "\n", SD_ID128_FORMAT_VAL(*settle_id));
+                printf("settle " SD_ID128_UUID_FORMAT_STR "\n", SD_ID128_FORMAT_VAL(id));
 
-        free(hashmap_remove(settle_hashmap, syspath));
-        free(k);
-
-        if (hashmap_isempty(settle_hashmap))
+        if (set_isempty(settle_path_or_ids))
                 return sd_event_exit(sd_device_monitor_get_event(m), 0);
 
         return 0;
@@ -217,6 +254,7 @@ static int help(void) {
                "  -t --type=                        Type of events to trigger\n"
                "          devices                     sysfs devices (default)\n"
                "          subsystems                  sysfs subsystems and drivers\n"
+               "          all                         sysfs devices, subsystems, and drivers\n"
                "  -c --action=ACTION|help           Event action value, default is \"change\"\n"
                "  -s --subsystem-match=SUBSYSTEM    Trigger devices from a matching subsystem\n"
                "  -S --subsystem-nomatch=SUBSYSTEM  Exclude devices from a matching subsystem\n"
@@ -227,6 +265,7 @@ static int help(void) {
                "  -y --sysname-match=NAME           Trigger devices with this /sys path\n"
                "     --name-match=NAME              Trigger devices with this /dev name\n"
                "  -b --parent-match=NAME            Trigger devices with that parent device\n"
+               "     --include-parents              Trigger parent devices of found devices\n"
                "     --initialized-match            Trigger devices that are already initialized\n"
                "     --initialized-nomatch          Trigger devices that are not initialized yet\n"
                "  -w --settle                       Wait for the triggered events to complete\n"
@@ -248,6 +287,7 @@ int trigger_main(int argc, char *argv[], void *userdata) {
                 ARG_PRIORITIZED_SUBSYSTEM,
                 ARG_INITIALIZED_MATCH,
                 ARG_INITIALIZED_NOMATCH,
+                ARG_INCLUDE_PARENTS,
         };
 
         static const struct option options[] = {
@@ -265,6 +305,7 @@ int trigger_main(int argc, char *argv[], void *userdata) {
                 { "sysname-match",         required_argument, NULL, 'y'                       },
                 { "name-match",            required_argument, NULL, ARG_NAME                  },
                 { "parent-match",          required_argument, NULL, 'b'                       },
+                { "include-parents",       no_argument,       NULL, ARG_INCLUDE_PARENTS       },
                 { "initialized-match",     no_argument,       NULL, ARG_INITIALIZED_MATCH     },
                 { "initialized-nomatch",   no_argument,       NULL, ARG_INITIALIZED_NOMATCH   },
                 { "settle",                no_argument,       NULL, 'w'                       },
@@ -284,9 +325,9 @@ int trigger_main(int argc, char *argv[], void *userdata) {
         _cleanup_(sd_device_enumerator_unrefp) sd_device_enumerator *e = NULL;
         _cleanup_(sd_device_monitor_unrefp) sd_device_monitor *m = NULL;
         _cleanup_(sd_event_unrefp) sd_event *event = NULL;
-        _cleanup_hashmap_free_ Hashmap *settle_hashmap = NULL;
+        _cleanup_set_free_ Set *settle_path_or_ids = NULL;
         usec_t ping_timeout_usec = 5 * USEC_PER_SEC;
-        bool settle = false, ping = false;
+        bool ping = false;
         int c, r;
 
         if (running_in_chroot() > 0) {
@@ -389,8 +430,13 @@ int trigger_main(int argc, char *argv[], void *userdata) {
                                 return log_error_errno(r, "Failed to add parent match '%s': %m", optarg);
                         break;
                 }
+                case ARG_INCLUDE_PARENTS:
+                        r = sd_device_enumerator_add_all_parents(e);
+                        if (r < 0)
+                                return log_error_errno(r, "Failed to always include all parents: %m");
+                        break;
                 case 'w':
-                        settle = true;
+                        arg_settle = true;
                         break;
 
                 case ARG_NAME: {
@@ -451,19 +497,10 @@ int trigger_main(int argc, char *argv[], void *userdata) {
         }
 
         if (ping) {
-                _cleanup_(udev_ctrl_unrefp) UdevCtrl *uctrl = NULL;
-
-                r = udev_ctrl_new(&uctrl);
+                r = udev_ping(ping_timeout_usec, /* ignore_connection_failure = */ false);
                 if (r < 0)
-                        return log_error_errno(r, "Failed to initialize udev control: %m");
-
-                r = udev_ctrl_send_ping(uctrl);
-                if (r < 0)
-                        return log_error_errno(r, "Failed to connect to udev daemon: %m");
-
-                r = udev_ctrl_wait(uctrl, ping_timeout_usec);
-                if (r < 0)
-                        return log_error_errno(r, "Failed to wait for daemon to reply: %m");
+                        return r;
+                assert(r > 0);
         }
 
         for (; optind < argc; optind++) {
@@ -478,11 +515,7 @@ int trigger_main(int argc, char *argv[], void *userdata) {
                         return log_error_errno(r, "Failed to add parent match '%s': %m", argv[optind]);
         }
 
-        if (settle) {
-                settle_hashmap = hashmap_new(&path_hash_ops_free_free);
-                if (!settle_hashmap)
-                        return log_oom();
-
+        if (arg_settle) {
                 r = sd_event_default(&event);
                 if (r < 0)
                         return log_error_errno(r, "Failed to get default event: %m");
@@ -495,7 +528,7 @@ int trigger_main(int argc, char *argv[], void *userdata) {
                 if (r < 0)
                         return log_error_errno(r, "Failed to attach event to device monitor: %m");
 
-                r = sd_device_monitor_start(m, device_monitor_handler, settle_hashmap);
+                r = sd_device_monitor_start(m, device_monitor_handler, &settle_path_or_ids);
                 if (r < 0)
                         return log_error_errno(r, "Failed to start device monitor: %m");
         }
@@ -520,11 +553,11 @@ int trigger_main(int argc, char *argv[], void *userdata) {
                 assert_not_reached();
         }
 
-        r = exec_list(e, action, settle_hashmap);
+        r = exec_list(e, action, arg_settle ? &settle_path_or_ids : NULL);
         if (r < 0)
                 return r;
 
-        if (event && !hashmap_isempty(settle_hashmap)) {
+        if (!set_isempty(settle_path_or_ids)) {
                 r = sd_event_loop(event);
                 if (r < 0)
                         return log_error_errno(r, "Event loop failed: %m");

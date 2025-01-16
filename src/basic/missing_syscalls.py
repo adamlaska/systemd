@@ -9,7 +9,7 @@ SYSCALLS = [
     'bpf',
     'close_range',
     'copy_file_range',
-    'epoll_pwait2',
+    'fchmodat2',
     'getrandom',
     'memfd_create',
     'mount_setattr',
@@ -20,6 +20,7 @@ SYSCALLS = [
     'pidfd_open',
     'pidfd_send_signal',
     'pkey_mprotect',
+    'quotactl_fd',
     'renameat2',
     'setns',
     'statx',
@@ -60,7 +61,7 @@ DEF_TEMPLATE_B = '''\
 #    define systemd_NR_{syscall} {nr_i386}
 #  elif defined(__ia64__)
 #    define systemd_NR_{syscall} {nr_ia64}
-#  elif defined(__loongarch64)
+#  elif defined(__loongarch_lp64)
 #    define systemd_NR_{syscall} {nr_loongarch64}
 #  elif defined(__m68k__)
 #    define systemd_NR_{syscall} {nr_m68k}

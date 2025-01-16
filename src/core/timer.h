@@ -2,6 +2,7 @@
 #pragma once
 
 typedef struct Timer Timer;
+typedef struct ActivationDetailsTimer ActivationDetailsTimer;
 
 #include "calendarspec.h"
 #include "unit.h"
@@ -60,20 +61,32 @@ struct Timer {
         bool on_clock_change;
         bool on_timezone_change;
         bool fixed_random_delay;
+        bool defer_reactivation;
 
         char *stamp_path;
 };
 
+struct ActivationDetailsTimer {
+        ActivationDetails meta;
+        dual_timestamp last_trigger;
+};
+
 #define TIMER_MONOTONIC_CLOCK(t) ((t)->wake_system ? CLOCK_BOOTTIME_ALARM : CLOCK_MONOTONIC)
+
+uint64_t timer_next_elapse_monotonic(const Timer *t);
 
 void timer_free_values(Timer *t);
 
 extern const UnitVTable timer_vtable;
+extern const ActivationDetailsVTable activation_details_timer_vtable;
 
-const char *timer_base_to_string(TimerBase i) _const_;
+const char* timer_base_to_string(TimerBase i) _const_;
 TimerBase timer_base_from_string(const char *s) _pure_;
+
+char* timer_base_to_usec_string(TimerBase i);
 
 const char* timer_result_to_string(TimerResult i) _const_;
 TimerResult timer_result_from_string(const char *s) _pure_;
 
 DEFINE_CAST(TIMER, Timer);
+DEFINE_ACTIVATION_DETAILS_CAST(ACTIVATION_DETAILS_TIMER, ActivationDetailsTimer, TIMER);

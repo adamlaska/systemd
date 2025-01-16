@@ -52,15 +52,14 @@ int config_parse_pfifo_size(
                 void *data,
                 void *userdata) {
 
-        _cleanup_(qdisc_free_or_set_invalidp) QDisc *qdisc = NULL;
-        Network *network = data;
+        _cleanup_(qdisc_unref_or_set_invalidp) QDisc *qdisc = NULL;
+        Network *network = ASSERT_PTR(data);
         FirstInFirstOut *fifo;
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = qdisc_new_static(ltype, network, filename, section_line, &qdisc);
         if (r == -ENOMEM)
@@ -113,8 +112,8 @@ int config_parse_bfifo_size(
                 void *data,
                 void *userdata) {
 
-        _cleanup_(qdisc_free_or_set_invalidp) QDisc *qdisc = NULL;
-        Network *network = data;
+        _cleanup_(qdisc_unref_or_set_invalidp) QDisc *qdisc = NULL;
+        Network *network = ASSERT_PTR(data);
         FirstInFirstOut *fifo;
         uint64_t u;
         int r;
@@ -122,7 +121,6 @@ int config_parse_bfifo_size(
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = qdisc_new_static(QDISC_KIND_BFIFO, network, filename, section_line, &qdisc);
         if (r == -ENOMEM)

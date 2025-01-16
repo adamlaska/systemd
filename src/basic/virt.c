@@ -9,13 +9,14 @@
 #include <unistd.h>
 
 #include "alloc-util.h"
-#include "cgroup-util.h"
 #include "dirent-util.h"
 #include "env-util.h"
 #include "errno-util.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "macro.h"
+#include "missing_threads.h"
+#include "namespace-util.h"
 #include "process-util.h"
 #include "stat-util.h"
 #include "string-table.h"
@@ -50,6 +51,9 @@ static Virtualization detect_vm_cpuid(void) {
                 { "QNXQVMBSQG",   VIRTUALIZATION_QNX       },
                 /* https://projectacrn.org */
                 { "ACRNACRNACRN", VIRTUALIZATION_ACRN      },
+                /* https://www.lockheedmartin.com/en-us/products/Hardened-Security-for-Intel-Processors.html */
+                { "SRESRESRESRE", VIRTUALIZATION_SRE       },
+                { "Apple VZ",     VIRTUALIZATION_APPLE     },
         };
 
         uint32_t eax, ebx, ecx, edx;
@@ -78,10 +82,10 @@ static Virtualization detect_vm_cpuid(void) {
 
                 log_debug("Virtualization found, CPUID=%s", sig.text);
 
-                for (size_t i = 0; i < ELEMENTSOF(vm_table); i++)
+                FOREACH_ELEMENT(vm, vm_table)
                         if (memcmp_nn(sig.text, sizeof(sig.text),
-                                      vm_table[i].sig, sizeof(vm_table[i].sig)) == 0)
-                                return vm_table[i].id;
+                                      vm->sig, sizeof(vm->sig)) == 0)
+                                return vm->id;
 
                 log_debug("Unknown virtualization with CPUID=%s. Add to vm_table[]?", sig.text);
                 return VIRTUALIZATION_VM_OTHER;
@@ -93,13 +97,14 @@ static Virtualization detect_vm_cpuid(void) {
 }
 
 static Virtualization detect_vm_device_tree(void) {
-#if defined(__arm__) || defined(__aarch64__) || defined(__powerpc__) || defined(__powerpc64__)
+#if defined(__arm__) || defined(__aarch64__) || defined(__powerpc__) || defined(__powerpc64__) || defined(__riscv)
         _cleanup_free_ char *hvtype = NULL;
         int r;
 
         r = read_one_line_file("/proc/device-tree/hypervisor/compatible", &hvtype);
         if (r == -ENOENT) {
                 _cleanup_closedir_ DIR *dir = NULL;
+                _cleanup_free_ char *compat = NULL;
 
                 if (access("/proc/device-tree/ibm,partition-name", F_OK) == 0 &&
                     access("/proc/device-tree/hmc-managed?", F_OK) == 0 &&
@@ -121,6 +126,14 @@ static Virtualization detect_vm_device_tree(void) {
                                 return VIRTUALIZATION_QEMU;
                         }
 
+                r = read_one_line_file("/proc/device-tree/compatible", &compat);
+                if (r < 0 && r != -ENOENT)
+                        return r;
+                if (r >= 0 && streq(compat, "qemu,pseries")) {
+                        log_debug("Virtualization %s found in /proc/device-tree/compatible", compat);
+                        return VIRTUALIZATION_QEMU;
+                }
+
                 log_debug("No virtualization found in /proc/device-tree/*");
                 return VIRTUALIZATION_NONE;
         } else if (r < 0)
@@ -141,7 +154,7 @@ static Virtualization detect_vm_device_tree(void) {
 #endif
 }
 
-#if defined(__i386__) || defined(__x86_64__) || defined(__arm__) || defined(__aarch64__) || defined(__loongarch64)
+#if defined(__i386__) || defined(__x86_64__) || defined(__arm__) || defined(__aarch64__) || defined(__loongarch_lp64) || defined(__riscv)
 static Virtualization detect_vm_dmi_vendor(void) {
         static const char* const dmi_vendors[] = {
                 "/sys/class/dmi/id/product_name", /* Test this before sys_vendor to detect KVM over QEMU */
@@ -156,21 +169,24 @@ static Virtualization detect_vm_dmi_vendor(void) {
                 const char *vendor;
                 Virtualization id;
         } dmi_vendor_table[] = {
-                { "KVM",                 VIRTUALIZATION_KVM       },
-                { "OpenStack",           VIRTUALIZATION_KVM       }, /* Detect OpenStack instance as KVM in non x86 architecture */
-                { "KubeVirt",            VIRTUALIZATION_KVM       }, /* Detect KubeVirt instance as KVM in non x86 architecture */
-                { "Amazon EC2",          VIRTUALIZATION_AMAZON    },
-                { "QEMU",                VIRTUALIZATION_QEMU      },
-                { "VMware",              VIRTUALIZATION_VMWARE    }, /* https://kb.vmware.com/s/article/1009458 */
-                { "VMW",                 VIRTUALIZATION_VMWARE    },
-                { "innotek GmbH",        VIRTUALIZATION_ORACLE    },
-                { "VirtualBox",          VIRTUALIZATION_ORACLE    },
-                { "Xen",                 VIRTUALIZATION_XEN       },
-                { "Bochs",               VIRTUALIZATION_BOCHS     },
-                { "Parallels",           VIRTUALIZATION_PARALLELS },
+                { "KVM",                   VIRTUALIZATION_KVM       },
+                { "OpenStack",             VIRTUALIZATION_KVM       }, /* Detect OpenStack instance as KVM in non x86 architecture */
+                { "KubeVirt",              VIRTUALIZATION_KVM       }, /* Detect KubeVirt instance as KVM in non x86 architecture */
+                { "Amazon EC2",            VIRTUALIZATION_AMAZON    },
+                { "QEMU",                  VIRTUALIZATION_QEMU      },
+                { "VMware",                VIRTUALIZATION_VMWARE    }, /* https://kb.vmware.com/s/article/1009458 */
+                { "VMW",                   VIRTUALIZATION_VMWARE    },
+                { "innotek GmbH",          VIRTUALIZATION_ORACLE    },
+                { "VirtualBox",            VIRTUALIZATION_ORACLE    },
+                { "Oracle Corporation",    VIRTUALIZATION_ORACLE    }, /* Detect VirtualBox on some proprietary systems via the board_vendor */
+                { "Xen",                   VIRTUALIZATION_XEN       },
+                { "Bochs",                 VIRTUALIZATION_BOCHS     },
+                { "Parallels",             VIRTUALIZATION_PARALLELS },
                 /* https://wiki.freebsd.org/bhyve */
-                { "BHYVE",               VIRTUALIZATION_BHYVE     },
-                { "Hyper-V",             VIRTUALIZATION_MICROSOFT },
+                { "BHYVE",                 VIRTUALIZATION_BHYVE     },
+                { "Hyper-V",               VIRTUALIZATION_MICROSOFT },
+                { "Apple Virtualization",  VIRTUALIZATION_APPLE     },
+                { "Google Compute Engine", VIRTUALIZATION_GOOGLE    }, /* https://cloud.google.com/run/docs/container-contract#sandbox */
         };
         int r;
 
@@ -185,10 +201,10 @@ static Virtualization detect_vm_dmi_vendor(void) {
                         return r;
                 }
 
-                for (size_t i = 0; i < ELEMENTSOF(dmi_vendor_table); i++)
-                        if (startswith(s, dmi_vendor_table[i].vendor)) {
+                FOREACH_ELEMENT(dmi_vendor, dmi_vendor_table)
+                        if (startswith(s, dmi_vendor->vendor)) {
                                 log_debug("Virtualization %s found in DMI (%s)", s, *vendor);
-                                return dmi_vendor_table[i].id;
+                                return dmi_vendor->id;
                         }
         }
         log_debug("No virtualization found in DMI vendor table.");
@@ -196,7 +212,7 @@ static Virtualization detect_vm_dmi_vendor(void) {
 }
 
 static int detect_vm_smbios(void) {
-        /* The SMBIOS BIOS Charateristics Extension Byte 2 (Section 2.1.2.2 of
+        /* The SMBIOS BIOS Characteristics Extension Byte 2 (Section 2.1.2.2 of
          * https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.4.0.pdf), specifies that
          * the 4th bit being set indicates a VM. The BIOS Characteristics table is exposed via the kernel in
          * /sys/firmware/dmi/entries/0-0. Note that in the general case, this bit being unset should not
@@ -230,10 +246,10 @@ static int detect_vm_smbios(void) {
         log_debug("DMI BIOS Extension table does not indicate virtualization.");
         return SMBIOS_VM_BIT_UNSET;
 }
-#endif /* defined(__i386__) || defined(__x86_64__) || defined(__arm__) || defined(__aarch64__) || defined(__loongarch64) */
+#endif /* defined(__i386__) || defined(__x86_64__) || defined(__arm__) || defined(__aarch64__) || defined(__loongarch_lp64) */
 
 static Virtualization detect_vm_dmi(void) {
-#if defined(__i386__) || defined(__x86_64__) || defined(__arm__) || defined(__aarch64__) || defined(__loongarch64)
+#if defined(__i386__) || defined(__x86_64__) || defined(__arm__) || defined(__aarch64__) || defined(__loongarch_lp64)
 
         int r;
         r = detect_vm_dmi_vendor();
@@ -251,6 +267,7 @@ static Virtualization detect_vm_dmi(void) {
                          * so we fallback to using the product name which is less restricted
                          * to distinguish metal systems from virtualized instances */
                         _cleanup_free_ char *s = NULL;
+                        const char *e;
 
                         r = read_full_virtual_file("/sys/class/dmi/id/product_name", &s, NULL);
                         /* In EC2, virtualized is much more common than metal, so if for some reason
@@ -260,8 +277,9 @@ static Virtualization detect_vm_dmi(void) {
                                                 " assuming virtualized: %m");
                                 return VIRTUALIZATION_AMAZON;
                         }
-                        if (endswith(truncate_nl(s), ".metal")) {
-                                log_debug("DMI product name ends with '.metal', assuming no virtualization");
+                        e = strstrafter(truncate_nl(s), ".metal");
+                        if (e && IN_SET(*e, 0, '-')) {
+                                log_debug("DMI product name has '.metal', assuming no virtualization");
                                 return VIRTUALIZATION_NONE;
                         } else
                                 return VIRTUALIZATION_AMAZON;
@@ -428,7 +446,7 @@ static Virtualization detect_vm_zvm(void) {
 /* Returns a short identifier for the various VM implementations */
 Virtualization detect_vm(void) {
         static thread_local Virtualization cached_found = _VIRTUALIZATION_INVALID;
-        bool other = false;
+        bool other = false, hyperv = false;
         int xen_dom0 = 0;
         Virtualization v, dmi;
 
@@ -437,12 +455,12 @@ Virtualization detect_vm(void) {
 
         /* We have to use the correct order here:
          *
-         * → First, try to detect Oracle Virtualbox, Amazon EC2 Nitro, and Parallels, even if they use KVM,
-         *   as well as Xen even if it cloaks as Microsoft Hyper-V. Attempt to detect uml at this stage also
-         *   since it runs as a user-process nested inside other VMs. Also check for Xen now, because Xen PV
-         *   mode does not override CPUID when nested inside another hypervisor.
+         * → First, try to detect Oracle Virtualbox, Amazon EC2 Nitro, Parallels, and Google Compute Engine,
+         *   even if they use KVM, as well as Xen, even if it cloaks as Microsoft Hyper-V. Attempt to detect
+         *   UML at this stage too, since it runs as a user-process nested inside other VMs. Also check for
+         *   Xen now, because Xen PV mode does not override CPUID when nested inside another hypervisor.
          *
-         * → Second, try to detect from CPUID, this will report KVM for whatever software is used even if
+         * → Second, try to detect from CPUID. This will report KVM for whatever software is used even if
          *   info in DMI is overwritten.
          *
          * → Third, try to detect from DMI. */
@@ -452,7 +470,8 @@ Virtualization detect_vm(void) {
                    VIRTUALIZATION_ORACLE,
                    VIRTUALIZATION_XEN,
                    VIRTUALIZATION_AMAZON,
-                   VIRTUALIZATION_PARALLELS)) {
+                   VIRTUALIZATION_PARALLELS,
+                   VIRTUALIZATION_GOOGLE)) {
                 v = dmi;
                 goto finish;
         }
@@ -477,8 +496,6 @@ Virtualization detect_vm(void) {
                         return xen_dom0;
                 if (xen_dom0 == 0)
                         goto finish;
-
-                v = VIRTUALIZATION_NONE;
         } else if (v != VIRTUALIZATION_NONE)
                 assert_not_reached();
 
@@ -486,7 +503,12 @@ Virtualization detect_vm(void) {
         v = detect_vm_cpuid();
         if (v < 0)
                 return v;
-        if (v == VIRTUALIZATION_VM_OTHER)
+        if (v == VIRTUALIZATION_MICROSOFT)
+                /* QEMU sets the CPUID string to hyperv's, in case it provides hyperv enlightenments. Let's
+                 * hence not return Microsoft here but just use the other mechanisms first to make a better
+                 * decision. */
+                hyperv = true;
+        else if (v == VIRTUALIZATION_VM_OTHER)
                 other = true;
         else if (v != VIRTUALIZATION_NONE)
                 goto finish;
@@ -527,8 +549,15 @@ Virtualization detect_vm(void) {
                 return v;
 
 finish:
-        if (v == VIRTUALIZATION_NONE && other)
-                v = VIRTUALIZATION_VM_OTHER;
+        /* None of the checks above gave us a clear answer, hence let's now use fallback logic: if hyperv
+         * enlightenments are available but the VMM wasn't recognized as anything yet, it's probably
+         * Microsoft. */
+        if (v == VIRTUALIZATION_NONE) {
+                if (hyperv)
+                        v = VIRTUALIZATION_MICROSOFT;
+                else if (other)
+                        v = VIRTUALIZATION_VM_OTHER;
+        }
 
         cached_found = v;
         log_debug("Found VM virtualization %s", virtualization_to_string(v));
@@ -549,70 +578,14 @@ static const char *const container_table[_VIRTUALIZATION_MAX] = {
 
 DEFINE_PRIVATE_STRING_TABLE_LOOKUP_FROM_STRING(container, int);
 
-static int running_in_cgroupns(void) {
+static int running_in_pidns(void) {
         int r;
 
-        if (!cg_ns_supported())
-                return false;
-
-        r = cg_all_unified();
+        r = namespace_is_init(NAMESPACE_PID);
         if (r < 0)
-                return r;
+                return log_debug_errno(r, "Failed to test if in root PID namespace, ignoring: %m");
 
-        if (r) {
-                /* cgroup v2 */
-
-                r = access("/sys/fs/cgroup/cgroup.events", F_OK);
-                if (r < 0) {
-                        if (errno != ENOENT)
-                                return -errno;
-                        /* All kernel versions have cgroup.events in nested cgroups. */
-                        return false;
-                }
-
-                /* There's no cgroup.type in the root cgroup, and future kernel versions
-                 * are unlikely to add it since cgroup.type is something that makes no sense
-                 * whatsoever in the root cgroup. */
-                r = access("/sys/fs/cgroup/cgroup.type", F_OK);
-                if (r == 0)
-                        return true;
-                if (r < 0 && errno != ENOENT)
-                        return -errno;
-
-                /* On older kernel versions, there's no cgroup.type */
-                r = access("/sys/kernel/cgroup/features", F_OK);
-                if (r < 0) {
-                        if (errno != ENOENT)
-                                return -errno;
-                        /* This is an old kernel that we know for sure has cgroup.events
-                         * only in nested cgroups. */
-                        return true;
-                }
-
-                /* This is a recent kernel, and cgroup.type doesn't exist, so we must be
-                 * in the root cgroup. */
-                return false;
-        } else {
-                /* cgroup v1 */
-
-                /* If systemd controller is not mounted, do not even bother. */
-                r = access("/sys/fs/cgroup/systemd", F_OK);
-                if (r < 0) {
-                        if (errno != ENOENT)
-                                return -errno;
-                        return false;
-                }
-
-                /* release_agent only exists in the root cgroup. */
-                r = access("/sys/fs/cgroup/systemd/release_agent", F_OK);
-                if (r < 0) {
-                        if (errno != ENOENT)
-                                return -errno;
-                        return true;
-                }
-
-                return false;
-        }
+        return !r;
 }
 
 static Virtualization detect_container_files(void) {
@@ -628,14 +601,14 @@ static Virtualization detect_container_files(void) {
                 { "/.dockerenv",        VIRTUALIZATION_DOCKER },
         };
 
-        for (size_t i = 0; i < ELEMENTSOF(container_file_table); i++) {
-                if (access(container_file_table[i].file_path, F_OK) >= 0)
-                        return container_file_table[i].id;
+        FOREACH_ELEMENT(file, container_file_table) {
+                if (access(file->file_path, F_OK) >= 0)
+                        return file->id;
 
                 if (errno != ENOENT)
                         log_debug_errno(errno,
                                         "Checking if %s exists failed, ignoring: %m",
-                                        container_file_table[i].file_path);
+                                        file->file_path);
         }
 
         return VIRTUALIZATION_NONE;
@@ -758,13 +731,13 @@ check_files:
         if (v != VIRTUALIZATION_NONE)
                 goto finish;
 
-        r = running_in_cgroupns();
-        if (r > 0) {
+        /* Finally, the root pid namespace has an hardcoded inode number of 0xEFFFFFFC since kernel 3.8, so
+         * if all else fails we can check the inode number of our pid namespace and compare it. */
+        if (running_in_pidns() > 0) {
+                log_debug("Running in a pid namespace, assuming unknown container manager.");
                 v = VIRTUALIZATION_CONTAINER_OTHER;
                 goto finish;
         }
-        if (r < 0)
-                log_debug_errno(r, "Failed to detect cgroup namespace: %m");
 
         /* If none of that worked, give up, assume no container manager. */
         v = VIRTUALIZATION_NONE;
@@ -775,7 +748,7 @@ translate_name:
                 /* Some images hardcode container=oci, but OCI is not a specific container manager.
                  * Try to detect one based on well-known files. */
                 v = detect_container_files();
-                if (v != VIRTUALIZATION_NONE)
+                if (v == VIRTUALIZATION_NONE)
                         v = VIRTUALIZATION_CONTAINER_OTHER;
                 goto finish;
         }
@@ -799,77 +772,46 @@ Virtualization detect_virtualization(void) {
         return detect_vm();
 }
 
-static int userns_has_mapping(const char *name) {
-        _cleanup_fclose_ FILE *f = NULL;
-        uid_t a, b, c;
-        int r;
-
-        f = fopen(name, "re");
-        if (!f) {
-                log_debug_errno(errno, "Failed to open %s: %m", name);
-                return errno == ENOENT ? false : -errno;
-        }
-
-        errno = 0;
-        r = fscanf(f, UID_FMT " " UID_FMT " " UID_FMT "\n", &a, &b, &c);
-        if (r == EOF) {
-                if (ferror(f))
-                        return log_debug_errno(errno_or_else(EIO), "Failed to read %s: %m", name);
-
-                log_debug("%s is empty, we're in an uninitialized user namespace", name);
-                return true;
-        }
-        if (r != 3)
-                return log_debug_errno(SYNTHETIC_ERRNO(EBADMSG), "Failed to parse %s: %m", name);
-
-        if (a == 0 && b == 0 && c == UINT32_MAX) {
-                /* The kernel calls mappings_overlap() and does not allow overlaps */
-                log_debug("%s has a full 1:1 mapping", name);
-                return false;
-        }
-
-        /* Anything else implies that we are in a user namespace */
-        log_debug("Mapping found in %s, we're in a user namespace", name);
-        return true;
-}
-
 int running_in_userns(void) {
-        _cleanup_free_ char *line = NULL;
         int r;
 
-        r = userns_has_mapping("/proc/self/uid_map");
-        if (r != 0)
-                return r;
+        r = namespace_is_init(NAMESPACE_USER);
+        if (r < 0)
+                return log_debug_errno(r, "Failed to test if in root user namespace, ignoring: %m");
 
-        r = userns_has_mapping("/proc/self/gid_map");
-        if (r != 0)
-                return r;
-
-        /* "setgroups" file was added in kernel v3.18-rc6-15-g9cc46516dd. It is also possible to compile a
-         * kernel without CONFIG_USER_NS, in which case "setgroups" also does not exist. We cannot
-         * distinguish those two cases, so assume that we're running on a stripped-down recent kernel, rather
-         * than on an old one, and if the file is not found, return false. */
-        r = read_virtual_file("/proc/self/setgroups", SIZE_MAX, &line, NULL);
-        if (r < 0) {
-                log_debug_errno(r, "/proc/self/setgroups: %m");
-                return r == -ENOENT ? false : r;
-        }
-
-        strstrip(line); /* remove trailing newline */
-
-        r = streq(line, "deny");
-        /* See user_namespaces(7) for a description of this "setgroups" contents. */
-        log_debug("/proc/self/setgroups contains \"%s\", %s user namespace", line, r ? "in" : "not in");
-        return r;
+        return !r;
 }
 
 int running_in_chroot(void) {
         int r;
 
+        /* If we're PID1, /proc may not be mounted (and most likely we're not in a chroot). But PID1 will
+         * mount /proc, so all other programs can assume that if /proc is *not* available, we're in some
+         * chroot. */
+
+        r = getenv_bool("SYSTEMD_IN_CHROOT");
+        if (r >= 0)
+                return r > 0;
+        if (r != -ENXIO)
+                log_debug_errno(r, "Failed to parse $SYSTEMD_IN_CHROOT, ignoring: %m");
+
+        /* Deprecated but kept for backwards compatibility. */
         if (getenv_bool("SYSTEMD_IGNORE_CHROOT") > 0)
                 return 0;
 
-        r = files_same("/proc/1/root", "/", 0);
+        r = inode_same("/proc/1/root", "/", 0);
+        if (r == -ENOENT) {
+                r = proc_mounted();
+                if (r == 0) {
+                        if (getpid_cached() == 1)
+                                return false; /* We will mount /proc, assuming we're not in a chroot. */
+
+                        log_debug("/proc is not mounted, assuming we're in a chroot.");
+                        return true;
+                }
+                if (r > 0)  /* If we have fake /proc/, we can't do the check properly. */
+                        return -ENOSYS;
+        }
         if (r < 0)
                 return r;
 
@@ -971,7 +913,7 @@ static bool real_has_cpu_with_flag(const char *flag) {
                         return true;
         }
 
-        if (__get_cpuid(7, &eax, &ebx, &ecx, &edx)) {
+        if (__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
                 if (given_flag_in_set(flag, leaf7_ebx, ELEMENTSOF(leaf7_ebx), ebx))
                         return true;
         }
@@ -1018,6 +960,9 @@ static const char *const virtualization_table[_VIRTUALIZATION_MAX] = {
         [VIRTUALIZATION_QNX]             = "qnx",
         [VIRTUALIZATION_ACRN]            = "acrn",
         [VIRTUALIZATION_POWERVM]         = "powervm",
+        [VIRTUALIZATION_APPLE]           = "apple",
+        [VIRTUALIZATION_SRE]             = "sre",
+        [VIRTUALIZATION_GOOGLE]          = "google",
         [VIRTUALIZATION_VM_OTHER]        = "vm-other",
 
         [VIRTUALIZATION_SYSTEMD_NSPAWN]  = "systemd-nspawn",

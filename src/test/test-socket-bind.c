@@ -49,9 +49,8 @@ static int test_socket_bind(
                         return log_unit_error_errno(u, r, "Failed to parse SocketBindAllow: %m");
         }
 
-        fprintf(stderr, "SocketBindAllow:");
-        LIST_FOREACH(socket_bind_items, bi, cc->socket_bind_allow)
-                cgroup_context_dump_socket_bind_item(bi, stderr);
+        fprintf(stderr, "SocketBindAllow: ");
+        cgroup_context_dump_socket_bind_items(cc->socket_bind_allow, stderr);
         fputc('\n', stderr);
 
         STRV_FOREACH(rule, deny_rules) {
@@ -62,13 +61,12 @@ static int test_socket_bind(
                         return log_unit_error_errno(u, r, "Failed to parse SocketBindDeny: %m");
         }
 
-        fprintf(stderr, "SocketBindDeny:");
-        LIST_FOREACH(socket_bind_items, bi, cc->socket_bind_deny)
-                cgroup_context_dump_socket_bind_item(bi, stderr);
+        fprintf(stderr, "SocketBindDeny: ");
+        cgroup_context_dump_socket_bind_items(cc->socket_bind_deny, stderr);
         fputc('\n', stderr);
 
         exec_start = strjoin("-timeout --preserve-status -sSIGTERM 1s ", netcat_path, " -l ", port, " -vv");
-        assert_se(exec_start != NULL);
+        ASSERT_NOT_NULL(exec_start);
 
         r = config_parse_exec(u->id, "filename", 1, "Service", 1, "ExecStart",
                         SERVICE_EXEC_START, exec_start, SERVICE(u)->exec_command, u);
@@ -78,14 +76,14 @@ static int test_socket_bind(
         SERVICE(u)->type = SERVICE_ONESHOT;
         u->load_state = UNIT_LOADED;
 
-        r = unit_start(u);
+        r = unit_start(u, NULL);
         if (r < 0)
                 return log_error_errno(r, "Unit start failed %m");
 
         while (!IN_SET(SERVICE(u)->state, SERVICE_DEAD, SERVICE_FAILED)) {
                 r = sd_event_run(m->event, UINT64_MAX);
                 if (r < 0)
-                        return log_error_errno(errno, "Event run failed %m");
+                        return log_error_errno(r, "Event run failed %m");
         }
 
         cld_code = SERVICE(u)->exec_command[SERVICE_EXEC_START]->exec_status.code;
@@ -128,11 +126,11 @@ int main(int argc, char *argv[]) {
         if (r == -ENOMEDIUM)
                 return log_tests_skipped("cgroupfs not available");
 
-        assert_se(get_testdata_dir("units", &unit_dir) >= 0);
-        assert_se(set_unit_path(unit_dir) >= 0);
+        ASSERT_OK(get_testdata_dir("units", &unit_dir));
+        ASSERT_OK(setenv_unit_path(unit_dir));
         assert_se(runtime_dir = setup_fake_runtime_dir());
 
-        assert_se(manager_new(LOOKUP_SCOPE_USER, MANAGER_TEST_RUN_BASIC, &m) >= 0);
+        assert_se(manager_new(RUNTIME_SCOPE_USER, MANAGER_TEST_RUN_BASIC, &m) >= 0);
         assert_se(manager_startup(m, NULL, NULL, NULL) >= 0);
 
         assert_se(test_socket_bind(m, "socket_bind_test.service", netcat_path, "2000", STRV_MAKE("2000"), STRV_MAKE("any")) >= 0);

@@ -8,13 +8,15 @@ rules = [
         [files('60-autosuspend.rules',
                '60-block.rules',
                '60-cdrom_id.rules',
+               '60-dmi-id.rules',
                '60-drm.rules',
                '60-evdev.rules',
                '60-fido-id.rules',
+               '60-infiniband.rules',
                '60-input-id.rules',
                '60-persistent-alsa.rules',
                '60-persistent-input.rules',
-               '60-persistent-storage.rules',
+               '60-persistent-storage-mtd.rules',
                '60-persistent-storage-tape.rules',
                '60-persistent-v4l.rules',
                '60-sensor.rules',
@@ -27,31 +29,37 @@ rules = [
                '75-probe_mtd.rules',
                '78-sound-card.rules',
                '80-net-setup-link.rules',
+               '81-net-bridge.rules',
                '81-net-dhcp.rules',
+               '90-iocost.rules',
               )],
 
         [files('80-drivers.rules'),
          conf.get('HAVE_KMOD') == 1],
 
         [files('70-memory.rules'),
-         dmi_arches.contains(host_machine.cpu_family())],
+         conf.get('HAVE_DMI') == 1],
 
         [files('70-power-switch.rules'),
          enable_logind],
 ]
 
 all_rules = []
+# For the udev alias
+buildable_rules = []
 
 foreach tuple : rules
         if tuple.length() == 1 or tuple[1]
                 install_data(tuple[0],
-                             install_dir : udevrulesdir)
+                             install_dir : udevrulesdir,
+                             install_tag : 'udev')
                 all_rules += tuple[0]
         endif
 endforeach
 
 rules_in = [
         ['50-udev-default.rules'],
+        ['60-persistent-storage.rules'],
         ['64-btrfs.rules'],
         ['99-systemd.rules'],
 
@@ -71,9 +79,11 @@ foreach tuple : rules_in
                 output: tuple[0],
                 command : [jinja2_cmdline, '@INPUT@', '@OUTPUT@'],
                 install : want,
-                install_dir : udevrulesdir)
+                install_dir : udevrulesdir,
+                install_tag : 'udev')
 
         if want
                 all_rules += rule
+                buildable_rules += rule
         endif
 endforeach

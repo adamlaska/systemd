@@ -57,15 +57,14 @@ int config_parse_hierarchy_token_bucket_default_class(
                 void *data,
                 void *userdata) {
 
-        _cleanup_(qdisc_free_or_set_invalidp) QDisc *qdisc = NULL;
+        _cleanup_(qdisc_unref_or_set_invalidp) QDisc *qdisc = NULL;
         HierarchyTokenBucket *htb;
-        Network *network = data;
+        Network *network = ASSERT_PTR(data);
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = qdisc_new_static(QDISC_KIND_HTB, network, filename, section_line, &qdisc);
         if (r == -ENOMEM)
@@ -110,15 +109,14 @@ int config_parse_hierarchy_token_bucket_u32(
                 void *data,
                 void *userdata) {
 
-        _cleanup_(qdisc_free_or_set_invalidp) QDisc *qdisc = NULL;
+        _cleanup_(qdisc_unref_or_set_invalidp) QDisc *qdisc = NULL;
         HierarchyTokenBucket *htb;
-        Network *network = data;
+        Network *network = ASSERT_PTR(data);
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = qdisc_new_static(QDISC_KIND_HTB, network, filename, section_line, &qdisc);
         if (r == -ENOMEM)
@@ -253,16 +251,15 @@ int config_parse_hierarchy_token_bucket_class_u32(
                 void *data,
                 void *userdata) {
 
-        _cleanup_(tclass_free_or_set_invalidp) TClass *tclass = NULL;
+        _cleanup_(tclass_unref_or_set_invalidp) TClass *tclass = NULL;
         HierarchyTokenBucketClass *htb;
-        Network *network = data;
+        Network *network = ASSERT_PTR(data);
         uint32_t v;
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = tclass_new_static(TCLASS_KIND_HTB, network, filename, section_line, &tclass);
         if (r == -ENOMEM)
@@ -307,16 +304,15 @@ int config_parse_hierarchy_token_bucket_class_size(
                 void *data,
                 void *userdata) {
 
-        _cleanup_(tclass_free_or_set_invalidp) TClass *tclass = NULL;
+        _cleanup_(tclass_unref_or_set_invalidp) TClass *tclass = NULL;
         HierarchyTokenBucketClass *htb;
-        Network *network = data;
+        Network *network = ASSERT_PTR(data);
         uint64_t v;
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = tclass_new_static(TCLASS_KIND_HTB, network, filename, section_line, &tclass);
         if (r == -ENOMEM)
@@ -391,16 +387,15 @@ int config_parse_hierarchy_token_bucket_class_rate(
                 void *data,
                 void *userdata) {
 
-        _cleanup_(tclass_free_or_set_invalidp) TClass *tclass = NULL;
+        _cleanup_(tclass_unref_or_set_invalidp) TClass *tclass = NULL;
         HierarchyTokenBucketClass *htb;
-        Network *network = data;
+        Network *network = ASSERT_PTR(data);
         uint64_t *v;
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = tclass_new_static(TCLASS_KIND_HTB, network, filename, section_line, &tclass);
         if (r == -ENOMEM)

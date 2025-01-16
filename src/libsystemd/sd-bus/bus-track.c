@@ -69,7 +69,7 @@ static void bus_track_add_to_queue(sd_bus_track *track) {
                 return;
 
         /* still referenced? */
-        if (hashmap_size(track->names) > 0)
+        if (!hashmap_isempty(track->names))
                 return;
 
         /* Nothing to call? */
@@ -164,12 +164,11 @@ static sd_bus_track *track_free(sd_bus_track *track) {
 DEFINE_PUBLIC_TRIVIAL_REF_UNREF_FUNC(sd_bus_track, sd_bus_track, track_free);
 
 static int on_name_owner_changed(sd_bus_message *message, void *userdata, sd_bus_error *error) {
-        sd_bus_track *track = userdata;
+        sd_bus_track *track = ASSERT_PTR(userdata);
         const char *name;
         int r;
 
         assert(message);
-        assert(track);
 
         r = sd_bus_message_read(message, "sss", &name, NULL, NULL);
         if (r < 0)

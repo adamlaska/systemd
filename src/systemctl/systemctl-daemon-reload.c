@@ -37,23 +37,21 @@ int daemon_reload(enum action action, bool graceful) {
         if (r < 0)
                 return bus_log_create_error(r);
 
-        /* Note we use an extra-long timeout here. This is because a reload or reexec means generators are
-         * rerun which are timed out after DEFAULT_TIMEOUT_USEC. Let's use twice that time here, so that the
-         * generators can have their timeout, and for everything else there's the same time budget in
-         * place. */
-
-        r = sd_bus_call(bus, m, DEFAULT_TIMEOUT_USEC * 2, &error, NULL);
+        /* Reloading the daemon may take long, hence set a longer timeout here */
+        r = sd_bus_call(bus, m, DAEMON_RELOAD_TIMEOUT_SEC, &error, NULL);
 
         /* On reexecution, we expect a disconnect, not a reply */
         if (IN_SET(r, -ETIMEDOUT, -ECONNRESET) && action == ACTION_REEXEC)
                 return 1;
         if (r < 0) {
                 if (graceful) { /* If graceful mode is selected, debug log, but don't fail */
-                        log_debug_errno(r, "Failed to reload daemon via the bus, ignoring: %s", bus_error_message(&error, r));
+                        log_debug_errno(r, "%s daemon failed via the bus, ignoring: %s",
+                                        method, bus_error_message(&error, r));
                         return 0;
                 }
 
-                return log_error_errno(r, "Failed to reload daemon: %s", bus_error_message(&error, r));
+                return log_error_errno(r, "%s daemon failed: %s",
+                                       method, bus_error_message(&error, r));
         }
 
         return 1;

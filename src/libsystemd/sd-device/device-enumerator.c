@@ -7,6 +7,7 @@
 
 #include "alloc-util.h"
 #include "device-enumerator-private.h"
+#include "device-filter.h"
 #include "device-util.h"
 #include "dirent-util.h"
 #include "fd-util.h"
@@ -15,8 +16,6 @@
 #include "string-util.h"
 #include "strv.h"
 
-#define DEVICE_ENUMERATE_MAX_DEPTH 256
-
 typedef enum DeviceEnumerationType {
         DEVICE_ENUMERATION_TYPE_DEVICES,
         DEVICE_ENUMERATION_TYPE_SUBSYSTEMS,
@@ -24,6 +23,17 @@ typedef enum DeviceEnumerationType {
         _DEVICE_ENUMERATION_TYPE_MAX,
         _DEVICE_ENUMERATION_TYPE_INVALID = -EINVAL,
 } DeviceEnumerationType;
+
+typedef enum MatchFlag {
+        MATCH_NONE        = 0,
+        MATCH_BASIC       = 1u << 0,
+        MATCH_SYSNAME     = 1u << 1,
+        MATCH_SUBSYSTEM   = 1u << 2,
+        MATCH_PARENT      = 1u << 3,
+        MATCH_TAG         = 1u << 4,
+
+        MATCH_ALL         = (1u << 5) - 1,
+} MatchFlag;
 
 struct sd_device_enumerator {
         unsigned n_ref;
@@ -41,11 +51,13 @@ struct sd_device_enumerator {
         Hashmap *match_sysattr;
         Hashmap *nomatch_sysattr;
         Hashmap *match_property;
+        Hashmap *match_property_required;
         Set *match_sysname;
         Set *nomatch_sysname;
         Set *match_tag;
         Set *match_parent;
         MatchInitializedType match_initialized;
+        MatchFlag parent_match_flags;
 };
 
 _public_ int sd_device_enumerator_new(sd_device_enumerator **ret) {
@@ -61,6 +73,7 @@ _public_ int sd_device_enumerator_new(sd_device_enumerator **ret) {
                 .n_ref = 1,
                 .type = _DEVICE_ENUMERATION_TYPE_INVALID,
                 .match_initialized = MATCH_INITIALIZED_COMPAT,
+                .parent_match_flags = MATCH_ALL,
         };
 
         *ret = TAKE_PTR(enumerator);
@@ -96,6 +109,7 @@ static sd_device_enumerator *device_enumerator_free(sd_device_enumerator *enumer
         hashmap_free(enumerator->match_sysattr);
         hashmap_free(enumerator->nomatch_sysattr);
         hashmap_free(enumerator->match_property);
+        hashmap_free(enumerator->match_property_required);
         set_free(enumerator->match_sysname);
         set_free(enumerator->nomatch_sysname);
         set_free(enumerator->match_tag);
@@ -181,6 +195,21 @@ _public_ int sd_device_enumerator_add_match_property(sd_device_enumerator *enume
         return 1;
 }
 
+_public_ int sd_device_enumerator_add_match_property_required(sd_device_enumerator *enumerator, const char *property, const char *value) {
+        int r;
+
+        assert_return(enumerator, -EINVAL);
+        assert_return(property, -EINVAL);
+
+        r = update_match_strv(&enumerator->match_property_required, property, value, /* clear_on_null = */ false);
+        if (r <= 0)
+                return r;
+
+        enumerator->scan_uptodate = false;
+
+        return 1;
+}
+
 static int device_enumerator_add_match_sysname(sd_device_enumerator *enumerator, const char *sysname, bool match) {
         int r;
 
@@ -257,6 +286,15 @@ _public_ int sd_device_enumerator_allow_uninitialized(sd_device_enumerator *enum
 
         return 1;
 }
+_public_ int sd_device_enumerator_add_all_parents(sd_device_enumerator *enumerator) {
+        assert_return(enumerator, -EINVAL);
+
+        enumerator->parent_match_flags = MATCH_NONE;
+
+        enumerator->scan_uptodate = false;
+
+        return 1;
+}
 
 int device_enumerator_add_match_is_initialized(sd_device_enumerator *enumerator, MatchInitializedType type) {
         assert_return(enumerator, -EINVAL);
@@ -282,11 +320,10 @@ static int sound_device_compare(const char *devpath_a, const char *devpath_b) {
          * kernel makes this guarantee when creating those devices, and hence we should too when
          * enumerating them. */
 
-        sound_a = strstr(devpath_a, "/sound/card");
+        sound_a = strstrafter(devpath_a, "/sound/card");
         if (!sound_a)
                 return 0;
 
-        sound_a += STRLEN("/sound/card");
         sound_a = strchr(devpath_a, '/');
         if (!sound_a)
                 return 0;
@@ -355,12 +392,8 @@ static int enumerator_sort_devices(sd_device_enumerator *enumerator) {
 
                         HASHMAP_FOREACH_KEY(device, syspath, enumerator->devices_by_syspath) {
                                 _cleanup_free_ char *p = NULL;
-                                const char *subsys;
 
-                                if (sd_device_get_subsystem(device, &subsys) < 0)
-                                        continue;
-
-                                if (!streq(subsys, *prioritized_subsystem))
+                                if (!device_in_subsystem(device, *prioritized_subsystem))
                                         continue;
 
                                 devices[n++] = sd_device_ref(device);
@@ -461,31 +494,38 @@ int device_enumerator_add_device(sd_device_enumerator *enumerator, sd_device *de
         return 1;
 }
 
-static bool match_property(sd_device_enumerator *enumerator, sd_device *device) {
+static bool match_property(Hashmap *properties, sd_device *device, bool match_all) {
         const char *property_pattern;
         char * const *value_patterns;
 
-        assert(enumerator);
         assert(device);
 
         /* Unlike device_match_sysattr(), this accepts device that has at least one matching property. */
 
-        if (hashmap_isempty(enumerator->match_property))
+        if (hashmap_isempty(properties))
                 return true;
 
-        HASHMAP_FOREACH_KEY(value_patterns, property_pattern, enumerator->match_property) {
-                const char *property, *value;
+        HASHMAP_FOREACH_KEY(value_patterns, property_pattern, properties) {
+                bool match = false;
 
                 FOREACH_DEVICE_PROPERTY(device, property, value) {
                         if (fnmatch(property_pattern, property, 0) != 0)
                                 continue;
 
-                        if (strv_fnmatch(value_patterns, value))
-                                return true;
+                        match = strv_fnmatch(value_patterns, value);
+                        if (match) {
+                                if (!match_all)
+                                        return true;
+
+                                break;
+                        }
                 }
+
+                if (!match && match_all)
+                        return false;
         }
 
-        return false;
+        return match_all;
 }
 
 static bool match_tag(sd_device_enumerator *enumerator, sd_device *device) {
@@ -540,38 +580,6 @@ static int match_initialized(sd_device_enumerator *enumerator, sd_device *device
         return (enumerator->match_initialized == MATCH_INITIALIZED_NO) == (r == 0);
 }
 
-static int test_matches(
-                sd_device_enumerator *enumerator,
-                sd_device *device,
-                bool ignore_parent_match) {
-
-        int r;
-
-        assert(enumerator);
-        assert(device);
-
-        /* Checks all matches, except for the sysname match (which the caller should check beforehand) */
-
-        r = match_initialized(enumerator, device);
-        if (r <= 0)
-                return r;
-
-        if (!ignore_parent_match &&
-            !device_match_parent(device, enumerator->match_parent, NULL))
-                return false;
-
-        if (!match_tag(enumerator, device))
-                return false;
-
-        if (!match_property(enumerator, device))
-                return false;
-
-        if (!device_match_sysattr(device, enumerator->match_sysattr, enumerator->nomatch_sysattr))
-                return false;
-
-        return true;
-}
-
 static bool match_subsystem(sd_device_enumerator *enumerator, const char *subsystem) {
         assert(enumerator);
 
@@ -581,69 +589,97 @@ static bool match_subsystem(sd_device_enumerator *enumerator, const char *subsys
         return set_fnmatch(enumerator->match_subsystem, enumerator->nomatch_subsystem, subsystem);
 }
 
+static int test_matches(
+                sd_device_enumerator *enumerator,
+                sd_device *device,
+                MatchFlag flags) {
+
+        int r;
+
+        assert(enumerator);
+        assert(device);
+
+        if (FLAGS_SET(flags, MATCH_SYSNAME)) {
+                const char *sysname;
+
+                r = sd_device_get_sysname(device, &sysname);
+                if (r < 0)
+                        return r;
+
+                if (!match_sysname(enumerator, sysname))
+                        return false;
+        }
+
+        if (FLAGS_SET(flags, MATCH_SUBSYSTEM)) {
+                const char *subsystem;
+
+                r = sd_device_get_subsystem(device, &subsystem);
+                if (r == -ENOENT)
+                        return false;
+                if (r < 0)
+                        return r;
+
+                if (!match_subsystem(enumerator, subsystem))
+                        return false;
+        }
+
+        if (FLAGS_SET(flags, MATCH_PARENT) &&
+            !device_match_parent(device, enumerator->match_parent, NULL))
+                return false;
+
+        if (FLAGS_SET(flags, MATCH_TAG) &&
+            !match_tag(enumerator, device))
+                return false;
+
+        if (FLAGS_SET(flags, MATCH_BASIC)) {
+                r = match_initialized(enumerator, device);
+                if (r <= 0)
+                        return r;
+
+                if (!match_property(enumerator->match_property, device, /* match_all = */ false))
+                        return false;
+
+                if (!match_property(enumerator->match_property_required, device, /* match_all = */ true))
+                        return false;
+
+                if (!device_match_sysattr(device, enumerator->match_sysattr, enumerator->nomatch_sysattr))
+                        return false;
+        }
+
+        return true;
+}
+
 static int enumerator_add_parent_devices(
                 sd_device_enumerator *enumerator,
                 sd_device *device,
-                bool ignore_parent_match) {
+                MatchFlag flags) {
 
-        int k, r = 0;
+        int r;
 
         assert(enumerator);
         assert(device);
 
         for (;;) {
-                const char *ss, *usn;
+                r = sd_device_get_parent(device, &device);
+                if (r == -ENOENT) /* Reached the top? */
+                        return 0;
+                if (r < 0)
+                        return r;
 
-                k = sd_device_get_parent(device, &device);
-                if (k == -ENOENT) /* Reached the top? */
-                        break;
-                if (k < 0) {
-                        r = k;
-                        break;
-                }
-
-                k = sd_device_get_subsystem(device, &ss);
-                if (k == -ENOENT) /* Has no subsystem? */
-                        continue;
-                if (k < 0) {
-                        r = k;
-                        break;
-                }
-
-                if (!match_subsystem(enumerator, ss))
+                r = test_matches(enumerator, device, flags);
+                if (r < 0)
+                        return r;
+                if (r == 0)
                         continue;
 
-                k = sd_device_get_sysname(device, &usn);
-                if (k < 0) {
-                        r = k;
-                        break;
-                }
-
-                if (!match_sysname(enumerator, usn))
-                        continue;
-
-                k = test_matches(enumerator, device, ignore_parent_match);
-                if (k < 0) {
-                        r = k;
-                        break;
-                }
-                if (k == 0)
-                        continue;
-
-                k = device_enumerator_add_device(enumerator, device);
-                if (k < 0) {
-                        r = k;
-                        break;
-                }
-                if (k == 0) /* Exists already? Then no need to go further up. */
-                        break;
+                r = device_enumerator_add_device(enumerator, device);
+                if (r <= 0) /* r == 0 means the device already exists, then no need to go further up. */
+                        return r;
         }
-
-        return r;
 }
 
 int device_enumerator_add_parent_devices(sd_device_enumerator *enumerator, sd_device *device) {
-        return enumerator_add_parent_devices(enumerator, device, /* ignore_parent_match = */ true);
+        return enumerator_add_parent_devices(enumerator, device, MATCH_ALL & (~MATCH_PARENT));
 }
 
 static bool relevant_sysfs_subdir(const struct dirent *de) {
@@ -679,9 +715,13 @@ static int enumerator_scan_dir_and_add_devices(
                 path = strjoina(path, subdir2, "/");
 
         dir = opendir(path);
-        if (!dir)
-                /* this is necessarily racey, so ignore missing directories */
-                return (errno == ENOENT && (subdir1 || subdir2)) ? 0 : -errno;
+        if (!dir) {
+                /* This is necessarily racey, so ignore missing directories */
+                if (errno == ENOENT)
+                        return 0;
+
+                return log_debug_errno(errno, "sd-device-enumerator: Failed to open directory '%s': %m", path);
+        }
 
         FOREACH_DIRENT_ALL(de, dir, return -errno) {
                 _cleanup_(sd_device_unrefp) sd_device *device = NULL;
@@ -704,7 +744,7 @@ static int enumerator_scan_dir_and_add_devices(
                         continue;
                 }
 
-                k = test_matches(enumerator, device, /* ignore_parent_match = */ false);
+                k = test_matches(enumerator, device, MATCH_ALL & (~MATCH_SYSNAME)); /* sysname is already tested. */
                 if (k <= 0) {
                         if (k < 0)
                                 r = k;
@@ -718,7 +758,7 @@ static int enumerator_scan_dir_and_add_devices(
                 /* Also include all potentially matching parent devices in the enumeration. These are things
                  * like root busses — e.g. /sys/devices/pci0000:00/ or /sys/devices/pnp0/, which ar not
                  * linked from /sys/class/ or /sys/bus/, hence pick them up explicitly here. */
-                k = enumerator_add_parent_devices(enumerator, device, /* ignore_parent_match = */ false);
+                k = enumerator_add_parent_devices(enumerator, device, enumerator->parent_match_flags);
                 if (k < 0)
                         r = k;
         }
@@ -739,10 +779,12 @@ static int enumerator_scan_dir(
         path = strjoina("/sys/", basedir);
 
         dir = opendir(path);
-        if (!dir)
-                return -errno;
+        if (!dir) {
+                if (errno == ENOENT)
+                        return 0;
 
-        log_debug("sd-device-enumerator: Scanning %s", path);
+                return log_debug_errno(errno, "sd-device-enumerator: Failed to open directory '%s': %m", path);
+        }
 
         FOREACH_DIRENT_ALL(de, dir, return -errno) {
                 int k;
@@ -750,7 +792,7 @@ static int enumerator_scan_dir(
                 if (!relevant_sysfs_subdir(de))
                         continue;
 
-                if (!match_subsystem(enumerator, subsystem ? : de->d_name))
+                if (!match_subsystem(enumerator, subsystem ?: de->d_name))
                         continue;
 
                 k = enumerator_scan_dir_and_add_devices(enumerator, basedir, de->d_name, subdir);
@@ -773,16 +815,16 @@ static int enumerator_scan_devices_tag(sd_device_enumerator *enumerator, const c
 
         dir = opendir(path);
         if (!dir) {
-                if (errno != ENOENT)
-                        return log_debug_errno(errno, "sd-device-enumerator: Failed to open tags directory %s: %m", path);
-                return 0;
+                if (errno == ENOENT)
+                        return 0;
+
+                return log_debug_errno(errno, "sd-device-enumerator: Failed to open directory '%s': %m", path);
         }
 
         /* TODO: filter away subsystems? */
 
         FOREACH_DIRENT_ALL(de, dir, return -errno) {
                 _cleanup_(sd_device_unrefp) sd_device *device = NULL;
-                const char *subsystem, *sysname;
                 int k;
 
                 if (de->d_name[0] == '.')
@@ -797,33 +839,11 @@ static int enumerator_scan_devices_tag(sd_device_enumerator *enumerator, const c
                         continue;
                 }
 
-                k = sd_device_get_subsystem(device, &subsystem);
-                if (k < 0) {
-                        if (k != -ENOENT)
-                                /* this is necessarily racy, so ignore missing devices */
-                                r = k;
-                        continue;
-                }
-
-                if (!match_subsystem(enumerator, subsystem))
-                        continue;
-
-                k = sd_device_get_sysname(device, &sysname);
-                if (k < 0) {
+                /* Generated from tag, hence not necessary to check tag again. */
+                k = test_matches(enumerator, device, MATCH_ALL & (~MATCH_TAG));
+                if (k < 0)
                         r = k;
-                        continue;
-                }
-
-                if (!match_sysname(enumerator, sysname))
-                        continue;
-
-                if (!device_match_parent(device, enumerator->match_parent, NULL))
-                        continue;
-
-                if (!match_property(enumerator, device))
-                        continue;
-
-                if (!device_match_sysattr(device, enumerator->match_sysattr, enumerator->nomatch_sysattr))
+                if (k <= 0)
                         continue;
 
                 k = device_enumerator_add_device(enumerator, device);
@@ -853,9 +873,8 @@ static int enumerator_scan_devices_tags(sd_device_enumerator *enumerator) {
         return r;
 }
 
-static int parent_add_child(sd_device_enumerator *enumerator, const char *path) {
+static int parent_add_child(sd_device_enumerator *enumerator, const char *path, MatchFlag flags) {
         _cleanup_(sd_device_unrefp) sd_device *device = NULL;
-        const char *subsystem, *sysname;
         int r;
 
         r = sd_device_new_from_syspath(&device, path);
@@ -865,42 +884,28 @@ static int parent_add_child(sd_device_enumerator *enumerator, const char *path) 
         else if (r < 0)
                 return r;
 
-        r = sd_device_get_subsystem(device, &subsystem);
-        if (r == -ENOENT)
-                return 0;
-        if (r < 0)
+        r = test_matches(enumerator, device, flags);
+        if (r <= 0)
                 return r;
 
-        if (!match_subsystem(enumerator, subsystem))
-                return 0;
-
-        r = sd_device_get_sysname(device, &sysname);
-        if (r < 0)
-                return r;
-
-        if (!match_sysname(enumerator, sysname))
-                return 0;
-
-        if (!match_property(enumerator, device))
-                return 0;
-
-        if (!device_match_sysattr(device, enumerator->match_sysattr, enumerator->nomatch_sysattr))
-                return 0;
-
-        r = device_enumerator_add_device(enumerator, device);
-        if (r < 0)
-                return r;
-
-        return 1;
+        return device_enumerator_add_device(enumerator, device);
 }
 
-static int parent_crawl_children(sd_device_enumerator *enumerator, const char *path, unsigned maxdepth) {
+static int parent_crawl_children(sd_device_enumerator *enumerator, const char *path, Set **stack) {
         _cleanup_closedir_ DIR *dir = NULL;
         int r = 0;
 
+        assert(enumerator);
+        assert(path);
+        assert(stack);
+
         dir = opendir(path);
-        if (!dir)
-                return log_debug_errno(errno, "sd-device-enumerator: Failed to open parent directory %s: %m", path);
+        if (!dir) {
+                if (errno == ENOENT)
+                        return 0;
+
+                return log_debug_errno(errno, "sd-device-enumerator: Failed to open directory '%s': %m", path);
+        }
 
         FOREACH_DIRENT_ALL(de, dir, return -errno) {
                 _cleanup_free_ char *child = NULL;
@@ -916,40 +921,54 @@ static int parent_crawl_children(sd_device_enumerator *enumerator, const char *p
                 if (!child)
                         return -ENOMEM;
 
-                k = parent_add_child(enumerator, child);
+                /* Let's check sysname filter earlier. The other tests require the sd-device object created
+                 * from the path, thus much costly. */
+                if (match_sysname(enumerator, de->d_name)) {
+                        k = parent_add_child(enumerator, child, MATCH_ALL & (~(MATCH_SYSNAME|MATCH_PARENT)));
+                        if (k < 0)
+                                r = k;
+                }
+
+                k = set_ensure_consume(stack, &path_hash_ops_free, TAKE_PTR(child));
                 if (k < 0)
                         r = k;
-
-                if (maxdepth > 0)
-                        parent_crawl_children(enumerator, child, maxdepth - 1);
-                else
-                        log_debug("sd-device-enumerator: Max depth reached, %s: ignoring devices", child);
         }
 
         return r;
 }
 
 static int enumerator_scan_devices_children(sd_device_enumerator *enumerator) {
+        _cleanup_set_free_ Set *stack = NULL;
         const char *path;
         int r = 0, k;
 
+        assert(enumerator);
+
         SET_FOREACH(path, enumerator->match_parent) {
-                k = parent_add_child(enumerator, path);
+                k = parent_add_child(enumerator, path, MATCH_ALL & (~MATCH_PARENT));
                 if (k < 0)
                         r = k;
 
-                k = parent_crawl_children(enumerator, path, DEVICE_ENUMERATE_MAX_DEPTH);
+                k = parent_crawl_children(enumerator, path, &stack);
                 if (k < 0)
                         r = k;
         }
 
-        return r;
+        for (;;) {
+                _cleanup_free_ char *p = NULL;
+
+                p = set_steal_first(stack);
+                if (!p)
+                        return r;
+
+                k = parent_crawl_children(enumerator, p, &stack);
+                if (k < 0)
+                        r = k;
+        }
 }
 
 static int enumerator_scan_devices_all(sd_device_enumerator *enumerator) {
         int k, r = 0;
-
-        log_debug("sd-device-enumerator: Scan all dirs");
 
         k = enumerator_scan_dir(enumerator, "bus", "devices", NULL);
         if (k < 0)

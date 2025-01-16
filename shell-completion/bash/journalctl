@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # journalctl(1) completion                                -*- shell-script -*-
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
@@ -27,8 +28,9 @@ __contains_word () {
 
 __get_machines() {
     local a b
-    (machinectl list-images --full --no-legend --no-pager; machinectl list --full --no-legend --no-pager; echo ".host") | \
-        { while read a b; do echo " $a"; done; } | sort -u;
+    { machinectl list --full --max-addresses=0 --no-legend --no-pager 2>/dev/null; echo ".host"; } | \
+        { while read a b; do echo " $a"; done; } | \
+        sort -u
 }
 
 __syslog_priorities=(emerg alert crit err warning notice info debug)
@@ -44,10 +46,12 @@ _journalctl() {
                       --version --list-catalog --update-catalog --list-boots
                       --show-cursor --dmesg -k --pager-end -e -r --reverse
                       --utc -x --catalog --no-full --force --dump-catalog
-                      --flush --rotate --sync --no-hostname -N --fields'
-        [ARG]='-b --boot -D --directory --file -F --field -t --identifier --facility
-                      -M --machine -o --output -u --unit --user-unit -p --priority
-                      --root --case-sensitive'
+                      --flush --rotate --sync --no-hostname -N --fields
+                      --list-namespaces --list-invocations -I'
+        [ARG]='-b --boot -D --directory --file -F --field -t --identifier
+                      -T --exclude-identifier --facility -M --machine -o --output
+                      -u --unit --user-unit -p --priority --root --case-sensitive
+                      --namespace --invocation'
         [ARGUNKNOWN]='-c --cursor --interval -n --lines -S --since -U --until
                       --after-cursor --cursor-file --verify-key -g --grep
                       --vacuum-size --vacuum-time --vacuum-files --output-fields'
@@ -90,7 +94,11 @@ _journalctl() {
                 compopt -o nosort
                 ;;
             --unit|-u)
-                comps=$(journalctl -F '_SYSTEMD_UNIT' 2>/dev/null)
+                if __contains_word "--user" ${COMP_WORDS[*]}; then
+                     comps=$(journalctl -F '_SYSTEMD_USER_UNIT' 2>/dev/null)
+                else
+                     comps=$(journalctl -F '_SYSTEMD_UNIT' 2>/dev/null)
+                fi
                 # Similarly to systemctl, we need to distinguish between
                 # escaped and unescaped names in order to be able to correctly
                 # complete them. In this particular case, if the name we're
@@ -105,12 +113,19 @@ _journalctl() {
                 ;;
             --user-unit)
                 comps=$(journalctl -F '_SYSTEMD_USER_UNIT' 2>/dev/null)
+                if ! [[ $cur =~ '\\' ]]; then
+                    cur="$(printf '%q' $cur)"
+                fi
+                compopt -o filenames
                 ;;
-            --identifier|-t)
+            --identifier|-t|--exclude-identifier|-T)
                 comps=$(journalctl -F 'SYSLOG_IDENTIFIER' 2>/dev/null)
                 ;;
             --case-sensitive)
                 comps='yes no'
+                ;;
+            --namespace)
+                comps=$(journalctl --list-namespaces --output=cat 2>/dev/null)
                 ;;
             *)
                 return 0

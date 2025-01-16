@@ -6,7 +6,7 @@
 
 #include <gnutls/socket.h>
 
-#include "io-util.h"
+#include "iovec-util.h"
 #include "resolved-dns-stream.h"
 #include "resolved-dnstls.h"
 #include "resolved-manager.h"
@@ -171,7 +171,7 @@ ssize_t dnstls_stream_writev(DnsStream *stream, const struct iovec *iov, size_t 
         assert(stream->encrypted);
         assert(stream->dnstls_data.session);
         assert(iov);
-        assert(IOVEC_TOTAL_SIZE(iov, iovcnt) > 0);
+        assert(iovec_total_size(iov, iovcnt) > 0);
 
         gnutls_record_cork(stream->dnstls_data.session);
 
@@ -236,7 +236,9 @@ int dnstls_manager_init(Manager *manager) {
 
         r = gnutls_certificate_allocate_credentials(&manager->dnstls_data.cert_cred);
         if (r < 0)
-                return -ENOMEM;
+                return log_warning_errno(SYNTHETIC_ERRNO(ENOTRECOVERABLE),
+                                         "Failed to allocate SSL credentials: %s",
+                                         gnutls_strerror(r));
 
         r = gnutls_certificate_set_x509_system_trust(manager->dnstls_data.cert_cred);
         if (r < 0)

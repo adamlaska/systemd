@@ -23,9 +23,12 @@ set -e
 COMMAND="${1:?}"
 KERNEL_VERSION="${2:?}"
 
+[ -w "/lib/modules" ] || exit 0
+
 case "$COMMAND" in
     add)
         [ -d "/lib/modules/$KERNEL_VERSION/kernel" ] || exit 0
+        command -v depmod >/dev/null || exit 0
         [ "$KERNEL_INSTALL_VERBOSE" -gt 0 ] && echo "+depmod -a $KERNEL_VERSION"
         exec depmod -a "$KERNEL_VERSION"
         ;;
@@ -41,6 +44,7 @@ case "$COMMAND" in
             "/lib/modules/$KERNEL_VERSION/modules.dep.bin" \
             "/lib/modules/$KERNEL_VERSION/modules.devname" \
             "/lib/modules/$KERNEL_VERSION/modules.softdep" \
+            "/lib/modules/$KERNEL_VERSION/modules.weakdep" \
             "/lib/modules/$KERNEL_VERSION/modules.symbols" \
             "/lib/modules/$KERNEL_VERSION/modules.symbols.bin"
         ;;

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
+/* Make sure the net/if.h header is included before any linux/ one */
 #include <net/if.h>
 #include <linux/can/netlink.h>
 
@@ -19,10 +20,6 @@ int can_set_netlink_message(Link *link, sd_netlink_message *m) {
         assert(link->network);
         assert(m);
 
-        r = sd_netlink_message_set_flags(m, NLM_F_REQUEST | NLM_F_ACK);
-        if (r < 0)
-                return r;
-
         r = sd_netlink_message_open_container(m, IFLA_LINKINFO);
         if (r < 0)
                 return r;
@@ -38,9 +35,9 @@ int can_set_netlink_message(Link *link, sd_netlink_message *m) {
                         .sjw = link->network->can_sync_jump_width,
                 };
 
-                log_link_debug(link, "Setting bitrate = %d bit/s", bt.bitrate);
+                log_link_debug(link, "Setting bitrate = %u bit/s", bt.bitrate);
                 if (link->network->can_sample_point > 0)
-                        log_link_debug(link, "Setting sample point = %d.%d%%", bt.sample_point / 10, bt.sample_point % 10);
+                        log_link_debug(link, "Setting sample point = %u.%u%%", bt.sample_point / 10, bt.sample_point % 10);
                 else
                         log_link_debug(link, "Using default sample point");
 
@@ -69,9 +66,9 @@ int can_set_netlink_message(Link *link, sd_netlink_message *m) {
                         .sjw = link->network->can_data_sync_jump_width,
                 };
 
-                log_link_debug(link, "Setting data bitrate = %d bit/s", bt.bitrate);
+                log_link_debug(link, "Setting data bitrate = %u bit/s", bt.bitrate);
                 if (link->network->can_data_sample_point > 0)
-                        log_link_debug(link, "Setting data sample point = %d.%d%%", bt.sample_point / 10, bt.sample_point % 10);
+                        log_link_debug(link, "Setting data sample point = %u.%u%%", bt.sample_point / 10, bt.sample_point % 10);
                 else
                         log_link_debug(link, "Using default data sample point");
 
@@ -149,14 +146,13 @@ int config_parse_can_bitrate(
                 void *data,
                 void *userdata) {
 
-        uint32_t *br = data;
+        uint32_t *br = ASSERT_PTR(data);
         uint64_t sz;
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = parse_size(rvalue, 1000, &sz);
         if (r < 0) {
@@ -189,13 +185,12 @@ int config_parse_can_time_quanta(
                 void *data,
                 void *userdata) {
 
-        nsec_t val, *tq = data;
+        nsec_t val, *tq = ASSERT_PTR(data);
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = parse_nsec(rvalue, &val);
         if (r < 0) {
@@ -227,13 +222,12 @@ int config_parse_can_restart_usec(
                 void *data,
                 void *userdata) {
 
-        usec_t usec, *restart_usec = data;
+        usec_t usec, *restart_usec = ASSERT_PTR(data);
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(data);
 
         r = parse_sec(rvalue, &usec);
         if (r < 0) {
@@ -265,14 +259,13 @@ int config_parse_can_control_mode(
                 void *data,
                 void *userdata) {
 
-        Network *network = userdata;
+        Network *network = ASSERT_PTR(userdata);
         uint32_t mask = ltype;
         int r;
 
         assert(filename);
         assert(lvalue);
         assert(rvalue);
-        assert(userdata);
         assert(mask != 0);
 
         if (isempty(rvalue)) {

@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "sd-id128.h"
+
 #include "alloc-util.h"
 #include "all-units.h"
 #include "glob-util.h"
@@ -22,7 +24,6 @@
 #include "unit-printf.h"
 #include "unit.h"
 #include "user-util.h"
-#include "util.h"
 
 static char *runtime_dir = NULL;
 
@@ -91,7 +92,7 @@ static void test_unit_name_replace_instance_one(const char *pattern, const char 
         _cleanup_free_ char *t = NULL;
         assert_se(unit_name_replace_instance(pattern, repl, &t) == ret);
         puts(strna(t));
-        assert_se(streq_ptr(t, expected));
+        ASSERT_STREQ(t, expected);
 }
 
 TEST(unit_name_replace_instance) {
@@ -111,7 +112,7 @@ static void test_unit_name_from_path_one(const char *path, const char *suffix, c
 
         assert_se(unit_name_from_path(path, suffix, &t) == ret);
         puts(strna(t));
-        assert_se(streq_ptr(t, expected));
+        ASSERT_STREQ(t, expected);
 
         if (t) {
                 _cleanup_free_ char *k = NULL;
@@ -158,7 +159,7 @@ static void test_unit_name_from_path_instance_one(const char *pattern, const cha
 
         assert_se(unit_name_from_path_instance(pattern, path, suffix, &t) == ret);
         puts(strna(t));
-        assert_se(streq_ptr(t, expected));
+        ASSERT_STREQ(t, expected);
 
         if (t) {
                 _cleanup_free_ char *k = NULL, *v = NULL;
@@ -184,7 +185,7 @@ static void test_unit_name_to_path_one(const char *unit, const char *path, int r
         _cleanup_free_ char *p = NULL;
 
         assert_se(unit_name_to_path(unit, &p) == ret);
-        assert_se(streq_ptr(path, p));
+        ASSERT_STREQ(path, p);
 }
 
 TEST(unit_name_to_path) {
@@ -200,10 +201,14 @@ TEST(unit_name_to_path) {
 
 static void test_unit_name_mangle_one(bool allow_globs, const char *pattern, const char *expect, int ret) {
         _cleanup_free_ char *t = NULL;
+        int r;
 
-        assert_se(unit_name_mangle(pattern, (allow_globs * UNIT_NAME_MANGLE_GLOB) | UNIT_NAME_MANGLE_WARN, &t) == ret);
+        r = unit_name_mangle(pattern, (allow_globs * UNIT_NAME_MANGLE_GLOB) | UNIT_NAME_MANGLE_WARN, &t);
+        log_debug("%s: %s -> %d, %s", __func__, pattern, r, strnull(t));
+
+        assert_se(r == ret);
         puts(strna(t));
-        assert_se(streq_ptr(t, expect));
+        ASSERT_STREQ(t, expect);
 
         if (t) {
                 _cleanup_free_ char *k = NULL;
@@ -212,7 +217,7 @@ static void test_unit_name_mangle_one(bool allow_globs, const char *pattern, con
                           (allow_globs && string_is_glob(t)));
 
                 assert_se(unit_name_mangle(t, (allow_globs * UNIT_NAME_MANGLE_GLOB) | UNIT_NAME_MANGLE_WARN, &k) == 0);
-                assert_se(streq_ptr(t, k));
+                ASSERT_STREQ(t, k);
         }
 }
 
@@ -233,35 +238,83 @@ TEST(unit_name_mangle) {
         test_unit_name_mangle_one(true, "ü*", "\\xc3\\xbc*", 1);
 }
 
+static void test_unit_name_mangle_with_suffix_one(const char *arg, int expected, const char *expected_name) {
+        _cleanup_free_ char *s = NULL;
+        int r;
+
+        r = unit_name_mangle_with_suffix(arg, NULL, 0, ".service", &s);
+        log_debug("%s: %s -> %d, %s", __func__, arg, r, strnull(s));
+
+        assert_se(r == expected);
+        ASSERT_STREQ(s, expected_name);
+}
+
+TEST(unit_name_mangle_with_suffix) {
+        test_unit_name_mangle_with_suffix_one("", -EINVAL, NULL);
+
+        test_unit_name_mangle_with_suffix_one("/dev", 1, "dev.mount");
+        test_unit_name_mangle_with_suffix_one("/../dev", 1, "dev.mount");
+        test_unit_name_mangle_with_suffix_one("/../dev/.", 1, "dev.mount");
+        /* We don't skip the last '..', and it makes this an invalid device or mount name */
+        test_unit_name_mangle_with_suffix_one("/.././dev/..", 1, "-..-.-dev-...service");
+        test_unit_name_mangle_with_suffix_one("/.././dev", 1, "dev.mount");
+        test_unit_name_mangle_with_suffix_one("/./.././../dev/", 1, "dev.mount");
+
+        test_unit_name_mangle_with_suffix_one("/dev/sda", 1, "dev-sda.device");
+        test_unit_name_mangle_with_suffix_one("/dev/sda5", 1, "dev-sda5.device");
+
+        test_unit_name_mangle_with_suffix_one("/sys", 1, "sys.mount");
+        test_unit_name_mangle_with_suffix_one("/../sys", 1, "sys.mount");
+        test_unit_name_mangle_with_suffix_one("/../sys/.", 1, "sys.mount");
+        /* We don't skip the last '..', and it makes this an invalid device or mount name */
+        test_unit_name_mangle_with_suffix_one("/.././sys/..", 1, "-..-.-sys-...service");
+        test_unit_name_mangle_with_suffix_one("/.././sys", 1, "sys.mount");
+        test_unit_name_mangle_with_suffix_one("/./.././../sys/", 1, "sys.mount");
+
+        test_unit_name_mangle_with_suffix_one("/proc", 1, "proc.mount");
+        test_unit_name_mangle_with_suffix_one("/../proc", 1, "proc.mount");
+        test_unit_name_mangle_with_suffix_one("/../proc/.", 1, "proc.mount");
+        /* We don't skip the last '..', and it makes this an invalid device or mount name */
+        test_unit_name_mangle_with_suffix_one("/.././proc/..", 1, "-..-.-proc-...service");
+        test_unit_name_mangle_with_suffix_one("/.././proc", 1, "proc.mount");
+        test_unit_name_mangle_with_suffix_one("/./.././../proc/", 1, "proc.mount");
+}
+
 TEST_RET(unit_printf, .sd_booted = true) {
         _cleanup_free_ char
-                *architecture, *os_image_version, *boot_id, *os_build_id,
+                *architecture, *os_image_version, *boot_id = NULL, *os_build_id,
                 *hostname, *short_hostname, *pretty_hostname,
-                *machine_id, *os_image_id, *os_id, *os_version_id, *os_variant_id,
+                *machine_id = NULL, *os_image_id, *os_id, *os_version_id, *os_variant_id,
                 *user, *group, *uid, *gid, *home, *shell,
                 *tmp_dir, *var_tmp_dir;
         _cleanup_(manager_freep) Manager *m = NULL;
+        _cleanup_close_ int fd = -EBADF;
         Unit *u;
         int r;
 
         _cleanup_(unlink_tempfilep) char filename[] = "/tmp/test-unit_printf.XXXXXX";
-        assert_se(mkostemp_safe(filename) >= 0);
+        fd = mkostemp_safe(filename);
+        assert_se(fd >= 0);
 
         /* Using the specifier functions is admittedly a bit circular, but we don't want to reimplement the
          * logic a second time. We're at least testing that the hookup works. */
         assert_se(specifier_architecture('a', NULL, NULL, NULL, &architecture) >= 0);
         assert_se(architecture);
         assert_se(specifier_os_image_version('A', NULL, NULL, NULL, &os_image_version) >= 0);
-        assert_se(specifier_boot_id('b', NULL, NULL, NULL, &boot_id) >= 0);
-        assert_se(boot_id);
+        if (sd_booted() > 0) {
+                assert_se(specifier_boot_id('b', NULL, NULL, NULL, &boot_id) >= 0);
+                assert_se(boot_id);
+        }
         assert_se(specifier_os_build_id('B', NULL, NULL, NULL, &os_build_id) >= 0);
         assert_se(hostname = gethostname_malloc());
         assert_se(specifier_short_hostname('l', NULL, NULL, NULL, &short_hostname) == 0);
         assert_se(short_hostname);
         assert_se(specifier_pretty_hostname('q', NULL, NULL, NULL, &pretty_hostname) == 0);
         assert_se(pretty_hostname);
-        assert_se(specifier_machine_id('m', NULL, NULL, NULL, &machine_id) >= 0);
-        assert_se(machine_id);
+        if (sd_id128_get_machine(NULL) >= 0) {
+                assert_se(specifier_machine_id('m', NULL, NULL, NULL, &machine_id) >= 0);
+                assert_se(machine_id);
+        }
         assert_se(specifier_os_image_id('M', NULL, NULL, NULL, &os_image_id) >= 0);
         assert_se(specifier_os_id('o', NULL, NULL, NULL, &os_id) >= 0);
         assert_se(specifier_os_version_id('w', NULL, NULL, NULL, &os_version_id) >= 0);
@@ -277,7 +330,7 @@ TEST_RET(unit_printf, .sd_booted = true) {
         assert_se(specifier_var_tmp_dir('V', NULL, NULL, NULL, &var_tmp_dir) >= 0);
         assert_se(var_tmp_dir);
 
-        r = manager_new(LOOKUP_SCOPE_USER, MANAGER_TEST_RUN_MINIMAL, &m);
+        r = manager_new(RUNTIME_SCOPE_USER, MANAGER_TEST_RUN_MINIMAL, &m);
         if (manager_errno_skip_test(r))
                 return log_tests_skipped_errno(r, "manager_new");
         assert_se(r == 0);
@@ -312,12 +365,14 @@ TEST_RET(unit_printf, .sd_booted = true) {
         /* normal unit */
         expect(u, "%a", architecture);
         expect(u, "%A", os_image_version);
-        expect(u, "%b", boot_id);
+        if (boot_id)
+                expect(u, "%b", boot_id);
         expect(u, "%B", os_build_id);
         expect(u, "%H", hostname);
         expect(u, "%l", short_hostname);
         expect(u, "%q", pretty_hostname);
-        expect(u, "%m", machine_id);
+        if (machine_id)
+                expect(u, "%m", machine_id);
         expect(u, "%M", os_image_id);
         expect(u, "%o", os_id);
         expect(u, "%w", os_version_id);
@@ -444,11 +499,11 @@ TEST(unit_name_change_suffix) {
         char *t;
 
         assert_se(unit_name_change_suffix("foo.mount", ".service", &t) == 0);
-        assert_se(streq(t, "foo.service"));
+        ASSERT_STREQ(t, "foo.service");
         free(t);
 
         assert_se(unit_name_change_suffix("foo@stuff.service", ".socket", &t) == 0);
-        assert_se(streq(t, "foo@stuff.socket"));
+        ASSERT_STREQ(t, "foo@stuff.socket");
         free(t);
 }
 
@@ -456,15 +511,15 @@ TEST(unit_name_build) {
         char *t;
 
         assert_se(unit_name_build("foo", "bar", ".service", &t) == 0);
-        assert_se(streq(t, "foo@bar.service"));
+        ASSERT_STREQ(t, "foo@bar.service");
         free(t);
 
         assert_se(unit_name_build("fo0-stUff_b", "bar", ".mount", &t) == 0);
-        assert_se(streq(t, "fo0-stUff_b@bar.mount"));
+        ASSERT_STREQ(t, "fo0-stUff_b@bar.mount");
         free(t);
 
         assert_se(unit_name_build("foo", NULL, ".service", &t) == 0);
-        assert_se(streq(t, "foo.service"));
+        ASSERT_STREQ(t, "foo.service");
         free(t);
 }
 
@@ -508,7 +563,7 @@ TEST(build_subslice) {
         free(b);
         assert_se(slice_build_subslice(a, "foobar", &b) >= 0);
         free(a);
-        assert_se(streq(b, "foo-bar-barfoo-foobar.slice"));
+        ASSERT_STREQ(b, "foo-bar-barfoo-foobar.slice");
         free(b);
 
         assert_se(slice_build_subslice("foo.service", "bar", &a) < 0);
@@ -519,7 +574,7 @@ static void test_build_parent_slice_one(const char *name, const char *expect, in
         _cleanup_free_ char *s = NULL;
 
         assert_se(slice_build_parent_slice(name, &s) == ret);
-        assert_se(streq_ptr(s, expect));
+        ASSERT_STREQ(s, expect);
 }
 
 TEST(build_parent_slice) {
@@ -547,17 +602,17 @@ TEST(unit_name_to_instance) {
 
         r = unit_name_to_instance("foo@bar.service", &instance);
         assert_se(r == UNIT_NAME_INSTANCE);
-        assert_se(streq(instance, "bar"));
+        ASSERT_STREQ(instance, "bar");
         free(instance);
 
         r = unit_name_to_instance("foo@.service", &instance);
         assert_se(r == UNIT_NAME_TEMPLATE);
-        assert_se(streq(instance, ""));
+        ASSERT_STREQ(instance, "");
         free(instance);
 
         r = unit_name_to_instance("fo0-stUff_b@b.service", &instance);
         assert_se(r == UNIT_NAME_INSTANCE);
-        assert_se(streq(instance, "b"));
+        ASSERT_STREQ(instance, "b");
         free(instance);
 
         r = unit_name_to_instance("foo.service", &instance);
@@ -574,11 +629,11 @@ TEST(unit_name_to_instance) {
 }
 
 TEST(unit_name_escape) {
-        _cleanup_free_ char *r;
+        _cleanup_free_ char *r = NULL;
 
         r = unit_name_escape("ab+-c.a/bc@foo.service");
         assert_se(r);
-        assert_se(streq(r, "ab\\x2b\\x2dc.a-bc\\x40foo.service"));
+        ASSERT_STREQ(r, "ab\\x2b\\x2dc.a-bc\\x40foo.service");
 }
 
 static void test_u_n_t_one(const char *name, const char *expected, int ret) {
@@ -586,7 +641,7 @@ static void test_u_n_t_one(const char *name, const char *expected, int ret) {
 
         assert_se(unit_name_template(name, &f) == ret);
         printf("got: %s, expected: %s\n", strna(f), strna(expected));
-        assert_se(streq_ptr(f, expected));
+        ASSERT_STREQ(f, expected);
 }
 
 TEST(unit_name_template) {
@@ -598,7 +653,7 @@ static void test_unit_name_path_unescape_one(const char *name, const char *path,
         _cleanup_free_ char *p = NULL;
 
         assert_se(unit_name_path_unescape(name, &p) == ret);
-        assert_se(streq_ptr(path, p));
+        ASSERT_STREQ(path, p);
 }
 
 TEST(unit_name_path_unescape) {
@@ -620,7 +675,7 @@ static void test_unit_name_to_prefix_one(const char *input, int ret, const char 
         _cleanup_free_ char *k = NULL;
 
         assert_se(unit_name_to_prefix(input, &k) == ret);
-        assert_se(streq_ptr(k, output));
+        ASSERT_STREQ(k, output);
 }
 
 TEST(unit_name_to_prefix) {
@@ -640,7 +695,7 @@ static void test_unit_name_from_dbus_path_one(const char *input, int ret, const 
         _cleanup_free_ char *k = NULL;
 
         assert_se(unit_name_from_dbus_path(input, &k) == ret);
-        assert_se(streq_ptr(k, output));
+        ASSERT_STREQ(k, output);
 }
 
 TEST(unit_name_from_dbus_path) {

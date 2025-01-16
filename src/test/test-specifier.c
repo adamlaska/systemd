@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
+#include "sd-id128.h"
+
 #include "alloc-util.h"
 #include "log.h"
 #include "specifier.h"
@@ -14,7 +16,7 @@ static void test_specifier_escape_one(const char *a, const char *b) {
         _cleanup_free_ char *x = NULL;
 
         x = specifier_escape(a);
-        assert_se(streq_ptr(x, b));
+        ASSERT_STREQ(x, b);
 }
 
 TEST(specifier_escape) {
@@ -47,7 +49,7 @@ TEST(specifier_escape_strv) {
 static const Specifier specifier_table[] = {
         COMMON_SYSTEM_SPECIFIERS,
 
-        COMMON_CREDS_SPECIFIERS(LOOKUP_SCOPE_USER),
+        COMMON_CREDS_SPECIFIERS(RUNTIME_SCOPE_USER),
         { 'h', specifier_user_home,       NULL },
 
         COMMON_TMP_SPECIFIERS,
@@ -71,10 +73,10 @@ TEST(specifier_printf) {
         assert_se(w);
 
         puts(w);
-        assert_se(streq(w, "xxx a=AAAA b=BBBB e= yyy"));
+        ASSERT_STREQ(w, "xxx a=AAAA b=BBBB e= yyy");
 
         free(w);
-        r = specifier_printf("machine=%m, boot=%b, host=%H, pretty=%q, version=%v, arch=%a, empty=%e", SIZE_MAX, table, NULL, NULL, &w);
+        r = specifier_printf("boot=%b, host=%H, pretty=%q, version=%v, arch=%a, empty=%e", SIZE_MAX, table, NULL, NULL, &w);
         assert_se(r >= 0);
         assert_se(w);
         puts(w);
@@ -104,8 +106,8 @@ TEST(specifier_real_path) {
         puts(strnull(w));
 
         /* /dev/initctl should normally be a symlink to /run/initctl */
-        if (files_same("/dev/initctl", "/run/initctl", 0) > 0)
-                assert_se(streq(w, "p=/dev/initctl y=/run/initctl Y=/run w=/dev/tty W=/dev"));
+        if (inode_same("/dev/initctl", "/run/initctl", 0) > 0)
+                ASSERT_STREQ(w, "p=/dev/initctl y=/run/initctl Y=/run w=/dev/tty W=/dev");
 }
 
 TEST(specifier_real_path_missing_file) {
@@ -127,13 +129,45 @@ TEST(specifier_real_path_missing_file) {
 }
 
 TEST(specifiers) {
+        int r;
+
         for (const Specifier *s = specifier_table; s->specifier; s++) {
                 char spec[3];
                 _cleanup_free_ char *resolved = NULL;
 
                 xsprintf(spec, "%%%c", s->specifier);
 
-                assert_se(specifier_printf(spec, SIZE_MAX, specifier_table, NULL, NULL, &resolved) >= 0);
+                r = specifier_printf(spec, SIZE_MAX, specifier_table, NULL, NULL, &resolved);
+                if (s->specifier == 'A' && r == -EUNATCH) /* os-release might be missing in build chroots */
+                        continue;
+                if (s->specifier == 'm' && IN_SET(r, -EUNATCH, -ENOMEDIUM, -ENOPKG)) /* machine-id might be missing in build chroots */
+                        continue;
+                assert_se(r >= 0);
+
+                log_info("%%%c → %s", s->specifier, resolved);
+        }
+}
+
+/* Bunch of specifiers that are not part of the common lists */
+TEST(specifiers_assorted) {
+        const sd_id128_t id = SD_ID128_ALLF;
+        const uint64_t llu = UINT64_MAX;
+        const Specifier table[] = {
+                /* Used in src/partition/repart.c */
+                { 'a', specifier_uuid,      &id },
+                { 'b', specifier_uint64,    &llu },
+                {}
+        };
+
+        for (const Specifier *s = table; s->specifier; s++) {
+                char spec[3];
+                _cleanup_free_ char *resolved = NULL;
+                int r;
+
+                xsprintf(spec, "%%%c", s->specifier);
+
+                r = specifier_printf(spec, SIZE_MAX, table, NULL, NULL, &resolved);
+                assert_se(r >= 0);
 
                 log_info("%%%c → %s", s->specifier, resolved);
         }
@@ -144,11 +178,11 @@ TEST(specifiers_missing_data_ok) {
 
         assert_se(setenv("SYSTEMD_OS_RELEASE", "/dev/null", 1) == 0);
         assert_se(specifier_printf("%A-%B-%M-%o-%w-%W", SIZE_MAX, specifier_table, NULL, NULL, &resolved) >= 0);
-        assert_se(streq(resolved, "-----"));
+        ASSERT_STREQ(resolved, "-----");
 
         assert_se(setenv("SYSTEMD_OS_RELEASE", "/nosuchfileordirectory", 1) == 0);
         assert_se(specifier_printf("%A-%B-%M-%o-%w-%W", SIZE_MAX, specifier_table, NULL, NULL, &resolved) == -EUNATCH);
-        assert_se(streq(resolved, "-----"));
+        ASSERT_STREQ(resolved, "-----");
 
         assert_se(unsetenv("SYSTEMD_OS_RELEASE") == 0);
 }

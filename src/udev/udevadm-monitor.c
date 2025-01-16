@@ -48,8 +48,6 @@ static int device_monitor_handler(sd_device_monitor *monitor, sd_device *device,
                devpath, subsystem);
 
         if (arg_show_property) {
-                const char *key, *value;
-
                 FOREACH_DEVICE_PROPERTY(device, key, value)
                         printf("%s=%s\n", key, value);
 
@@ -67,8 +65,6 @@ static int setup_monitor(MonitorNetlinkGroup sender, sd_event *event, sd_device_
         r = device_monitor_new_full(&monitor, sender, -1);
         if (r < 0)
                 return log_error_errno(r, "Failed to create netlink socket: %m");
-
-        (void) sd_device_monitor_set_receive_buffer_size(monitor, 128*1024*1024);
 
         r = sd_device_monitor_attach_event(monitor, event);
         if (r < 0)
@@ -91,8 +87,7 @@ static int setup_monitor(MonitorNetlinkGroup sender, sd_event *event, sd_device_
         if (r < 0)
                 return log_error_errno(r, "Failed to start device monitor: %m");
 
-        (void) sd_event_source_set_description(sd_device_monitor_get_event_source(monitor),
-                                               sender == MONITOR_GROUP_UDEV ? "device-monitor-udev" : "device-monitor-kernel");
+        (void) sd_device_monitor_set_description(monitor, sender == MONITOR_GROUP_UDEV ? "udev" : "kernel");
 
         *ret = TAKE_PTR(monitor);
         return 0;
@@ -213,9 +208,11 @@ int monitor_main(int argc, char *argv[], void *userdata) {
                 goto finalize;
         }
 
-        assert_se(sigprocmask_many(SIG_UNBLOCK, NULL, SIGTERM, SIGINT, -1) >= 0);
-        (void) sd_event_add_signal(event, NULL, SIGTERM, NULL, NULL);
-        (void) sd_event_add_signal(event, NULL, SIGINT, NULL, NULL);
+        r = sd_event_set_signal_exit(event, true);
+        if (r < 0) {
+                log_error_errno(r, "Failed to install SIGINT/SIGTERM handling: %m");
+                goto finalize;
+        }
 
         printf("monitor will print the received events for:\n");
         if (arg_print_udev) {
